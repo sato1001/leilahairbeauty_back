@@ -1,0 +1,111 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  CLIENT
+  ADMIN
+
+  @@map("user_role")
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+
+  @@map("appointment_status")
+}
+
+enum ServiceItemStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+
+  @@map("service_item_status")
+}
+
+enum AppointmentChannel {
+  ONLINE
+  PHONE
+
+  @@map("appointment_channel")
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  name         String   @db.VarChar(100)
+  email        String   @unique @db.VarChar(150)
+  phone        String?  @db.VarChar(20)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  role         UserRole @default(CLIENT)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  clientAppointments  Appointment[] @relation("ClientAppointments")
+  createdAppointments Appointment[] @relation("CreatedAppointments")
+
+  @@map("users")
+}
+
+model Service {
+  id              Int      @id @default(autoincrement())
+  name            String   @db.VarChar(100)
+  description     String?  @db.Text
+  durationMinutes Int      @map("duration_minutes")
+  price           Decimal  @db.Decimal(10, 2)
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  appointmentServices AppointmentService[]
+
+  @@index([active])
+  @@map("services")
+}
+
+model Appointment {
+  id          Int                @id @default(autoincrement())
+  clientId    Int                @map("client_id")
+  createdBy   Int                @map("created_by")
+  scheduledAt DateTime           @map("scheduled_at") @db.Timestamptz(6)
+  status      AppointmentStatus  @default(PENDING)
+  channel     AppointmentChannel @default(ONLINE)
+  createdAt   DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  client  User @relation("ClientAppointments", fields: [clientId], references: [id], onDelete: Restrict)
+  creator User @relation("CreatedAppointments", fields: [createdBy], references: [id], onDelete: Restrict)
+
+  appointmentServices AppointmentService[]
+
+  @@index([clientId])
+  @@index([scheduledAt])
+  @@index([status])
+  @@map("appointments")
+}
+
+model AppointmentService {
+  id            Int               @id @default(autoincrement())
+  appointmentId Int               @map("appointment_id")
+  serviceId     Int               @map("service_id")
+  priceCharged  Decimal           @map("price_charged") @db.Decimal(10, 2)
+  status        ServiceItemStatus @default(PENDING)
+  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
+  service     Service     @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+
+  @@unique([appointmentId, serviceId])
+  @@index([serviceId])
+  @@map("appointment_services")
+}
+
