@@ -22,7 +22,7 @@ Crie o arquivo `.env` a partir do modelo de exemplo:
 cp .env.example .env
 ```
 
-> **Nota**: O `.env.example` já vem pré-configurado com a porta `5433` para o PostgreSQL (evitando conflito com a porta padrão `5432` de outros projetos) e credenciais de administrador para o seed.
+> **Nota**: O `.env.example` já vem pré-configurado com a porta `5433` para o PostgreSQL (evitando conflito com a porta padrão `5432` de outros projetos), credenciais de administrador para o seed e configurações do JWT.
 
 ### 2. Instalar as Dependências
 
@@ -80,6 +80,107 @@ npm run dev
 ```
 
 A API estará disponível em: **[http://localhost:3001](http://localhost:3001)**
+
+---
+
+##  Execução de Testes
+
+Para executar os testes automatizados da aplicação:
+
+```bash
+npm test
+```
+
+A suíte cobre cenários de registro, validação, normalização de email, hash de senhas, login, geração de JWT, middlewares e proteção de rotas.
+
+---
+
+##  Endpoints de Autenticação
+
+### 1. Registro de Usuário (`POST /auth/register`)
+
+Cadastra um novo cliente na plataforma. O role atribuído é sempre `CLIENT`.
+
+* **URL**: `http://localhost:3001/auth/register`
+* **Headers**: `Content-Type: application/json`
+* **Exemplo de Request**:
+
+```json
+{
+  "name": "João da Silva",
+  "email": "joao@email.com",
+  "phone": "18999999999",
+  "password": "SenhaSegura123"
+}
+```
+
+* **Exemplo de Resposta (HTTP 201 Created)**:
+
+```json
+{
+  "user": {
+    "id": 3,
+    "name": "João da Silva",
+    "email": "joao@email.com",
+    "phone": "18999999999",
+    "role": "CLIENT"
+  }
+}
+```
+
+---
+
+### 2. Login (`POST /auth/login`)
+
+Autentica um usuário existente e retorna o token JWT.
+
+* **URL**: `http://localhost:3001/auth/login`
+* **Headers**: `Content-Type: application/json`
+* **Exemplo de Request**:
+
+```json
+{
+  "email": "joao@email.com",
+  "password": "SenhaSegura123"
+}
+```
+
+* **Exemplo de Resposta (HTTP 200 OK)**:
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {
+    "id": 3,
+    "name": "João da Silva",
+    "email": "joao@email.com",
+    "phone": "18999999999",
+    "role": "CLIENT"
+  }
+}
+```
+
+---
+
+### 3. Dados do Usuário Autenticado (`GET /auth/me`)
+
+Retorna os dados públicos do usuário logado a partir do token JWT.
+
+* **URL**: `http://localhost:3001/auth/me`
+* **Headers**: `Authorization: Bearer <seu_token_jwt>`
+* **Exemplo de Resposta (HTTP 200 OK)**:
+
+```json
+{
+  "user": {
+    "id": 3,
+    "name": "João da Silva",
+    "email": "joao@email.com",
+    "phone": "18999999999",
+    "role": "CLIENT"
+  }
+}
+```
 
 ---
 

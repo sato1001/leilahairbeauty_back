@@ -1,6 +1,8 @@
 import express, { Application } from "express";
 import healthRouter from "./routes/health";
+import authRouter from "./modules/auth/auth.routes";
 import { setupSwagger } from "./docs/swagger";
+import { errorMiddleware } from "./middlewares/error.middleware";
 
 const app: Application = express();
 
@@ -17,5 +19,8 @@ app.get("/", (_req, res) => {
 });
 
 app.use("/health", healthRouter);
+app.use("/auth", authRouter);
+
+app.use(errorMiddleware);
 
 export default app;
