@@ -13,7 +13,7 @@ export function errorMiddleware(
   if (error instanceof ZodError) {
     res.status(400).json({
       message: "Dados de entrada inválidos",
-      errors: error.errors.map((e) => ({
+      errors: error.issues.map((e) => ({
         field: e.path.join("."),
         message: e.message,
       })),

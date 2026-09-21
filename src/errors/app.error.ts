@@ -14,9 +14,20 @@ export class UnauthorizedError extends AppError {
   }
 }
 
+export class ForbiddenError extends AppError {
+  constructor(message = "Acesso negado: privilégios insuficientes") {
+    super(message, 403);
+  }
+}
+
+export class NotFoundError extends AppError {
+  constructor(message = "Recurso não encontrado") {
+    super(message, 404);
+  }
+}
+
 export class ConflictError extends AppError {
   constructor(message = "Email já cadastrado") {
     super(message, 409);
   }
 }
-
