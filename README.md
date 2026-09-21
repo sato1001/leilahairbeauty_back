@@ -408,6 +408,149 @@ Gerenciamento de agendamentos online e presenciais do salão, com cálculo autom
 
 ---
 
+### 4. Alterar Horário ou Serviços (`PATCH /appointments/:id`)
+* **Acesso**: Requer autenticação (`CLIENT` ou `ADMIN`).
+* **Headers**: `Authorization: Bearer <token_jwt>`
+* **Regras de Negócio**:
+  * É obrigatório enviar pelo menos um dos campos: `scheduled_at` ou `services`.
+  * **Regra de 48 Horas (CLIENT)**:
+    * Clientes só podem alterar agendamentos com antecedência mínima de **48 horas corridas** em relação ao horário agendado atual. Tentativas com menos de 48h retornam `403 Forbidden`.
+    * Administradores podem alterar a qualquer momento.
+  * **Status Permitidos**: Apenas agendamentos em status `PENDING` ou `CONFIRMED` podem ser alterados. Agendamentos `CANCELLED` ou `COMPLETED` retornam `422 Unprocessable Entity`.
+  * **Transição de Status**:
+    * Se alterado por **CLIENT**: caso esteja `CONFIRMED`, o status retorna para `PENDING` (exige nova confirmação da equipe). Se já estiver `PENDING`, permanece `PENDING`.
+    * Se alterado por **ADMIN**: o status é preservado intacto.
+  * **Preservação de Snapshot de Preço**:
+    * Serviços já existentes que continuam no agendamento mantêm o seu `price_charged` histórico original.
+    * Novos serviços adicionados recebem snapshot do preço atual cadastrado em `services`.
+    * Serviços removidos são deletados de `appointment_services`.
+  * **Recálculo de Duração e Conflitos**:
+    * Recalcula `duration` e `ends_at`.
+    * Verifica sobreposição ignorando o próprio agendamento (`409 Conflict` se houver colisão).
+* **Exemplo de Requisição**:
+```json
+{
+  "scheduled_at": "2026-10-16T10:00:00.000Z",
+  "services": [1, 3]
+}
+```
+* **Exemplo de Resposta (HTTP 200 OK)**:
+```json
+{
+  "appointment": {
+    "id": 10,
+    "client_id": 3,
+    "scheduled_at": "2026-10-16T10:00:00.000Z",
+    "ends_at": "2026-10-16T11:00:00.000Z",
+    "duration": 60,
+    "total": 110.00,
+    "status": "PENDING",
+    "services": [ ... ]
+  }
+}
+```
+
+---
+
+### 5. Cancelar Agendamento (`DELETE /appointments/:id`)
+* **Acesso**: Requer autenticação (`CLIENT` ou `ADMIN`).
+* **Headers**: `Authorization: Bearer <token_jwt>`
+* **Regras de Negócio**:
+  * Realiza **exclusão lógica** (soft delete): o registro físico no banco é preservado.
+  * O status do agendamento passa para `CANCELLED`.
+  * **Regra de 48 Horas (CLIENT)**:
+    * Clientes só podem cancelar com antecedência mínima de **48 horas corridas**. Tentativas com menos de 48h retornam `403 Forbidden`.
+    * Administradores podem cancelar a qualquer momento.
+  * **Validação de Status**: Não é possível cancelar agendamentos já em `CANCELLED` ou `COMPLETED` (`422 Unprocessable Entity`).
+  * **Cascata em Itens**: Serviços em status não finalizados (`PENDING`, `IN_PROGRESS`) passam para `CANCELLED`. Itens já `COMPLETED` são preservados no histórico.
+* **Exemplo de Resposta (HTTP 200 OK)**:
+```json
+{
+  "message": "Agendamento cancelado com sucesso",
+  "appointment": {
+    "id": 10,
+    "status": "CANCELLED",
+    "updated_at": "2026-09-21T02:00:00.000Z"
+  }
+}
+```
+
+---
+
+### 6. Confirmar Agendamento (`PATCH /appointments/:id/confirm`)
+* **Acesso**: Exclusivo para administradores (`ADMIN`).
+* **Headers**: `Authorization: Bearer <token_jwt>`
+* **Regras de Negócio**:
+  * Transição permitida: exclusivamente de `PENDING` para `CONFIRMED`.
+  * Tentativas de confirmar a partir de outro status retornam `422 Unprocessable Entity`.
+  * Não administradores recebem `403 Forbidden`.
+* **Exemplo de Resposta (HTTP 200 OK)**:
+```json
+{
+  "message": "Agendamento confirmado com sucesso",
+  "appointment": {
+    "id": 10,
+    "status": "CONFIRMED",
+    "updated_at": "2026-09-21T02:05:00.000Z"
+  }
+}
+```
+
+---
+
+### 7. Concluir Agendamento (`PATCH /appointments/:id/complete`)
+* **Acesso**: Exclusivo para administradores (`ADMIN`).
+* **Headers**: `Authorization: Bearer <token_jwt>`
+* **Regras de Negócio**:
+  * Transição permitida: exclusivamente de `CONFIRMED` para `COMPLETED`.
+  * Tentativas de concluir agendamentos em `PENDING`, `CANCELLED` ou já `COMPLETED` retornam `422 Unprocessable Entity`.
+  * Atualiza o status do agendamento para `COMPLETED` e cascateia status `COMPLETED` para itens de serviço ativos.
+* **Exemplo de Resposta (HTTP 200 OK)**:
+```json
+{
+  "message": "Agendamento concluído com sucesso",
+  "appointment": {
+    "id": 10,
+    "status": "COMPLETED",
+    "updated_at": "2026-09-21T02:10:00.000Z"
+  }
+}
+```
+
+---
+
+### Ciclo de Vida e Matriz de Transição de Status
+
+```text
+       ┌───────────┐
+       │  PENDING  │ ◄── (CLIENT altera agendamento CONFIRMED)
+       └─────┬─────┘
+             │ (ADMIN /confirm)
+             ▼
+       ┌───────────┐
+       │ CONFIRMED │
+       └─────┬─────┘
+             │ (ADMIN /complete)
+             ▼
+       ┌───────────┐
+       │ COMPLETED │ (Terminal)
+       └───────────┘
+
+  Qualquer PENDING ou CONFIRMED ──(DELETE /appointments/:id)──► CANCELLED (Terminal)
+```
+
+| Status Atual | Ação | Novo Status | Quem pode executar | Regras especiais |
+| :--- | :--- | :--- | :--- | :--- |
+| `PENDING` | `PATCH /appointments/:id/confirm` | `CONFIRMED` | `ADMIN` | — |
+| `CONFIRMED` | `PATCH /appointments/:id/complete` | `COMPLETED` | `ADMIN` | Cascateia `COMPLETED` aos itens |
+| `PENDING` / `CONFIRMED` | `DELETE /appointments/:id` | `CANCELLED` | `CLIENT` / `ADMIN` | `CLIENT` exige antecedência ≥ 48h |
+| `PENDING` | `PATCH /appointments/:id` | `PENDING` | `CLIENT` / `ADMIN` | `CLIENT` exige antecedência ≥ 48h |
+| `CONFIRMED` | `PATCH /appointments/:id` (CLIENT) | `PENDING` | `CLIENT` | Exige ≥ 48h; requer nova confirmação |
+| `CONFIRMED` | `PATCH /appointments/:id` (ADMIN) | `CONFIRMED` | `ADMIN` | Mantém confirmação existente |
+| `CANCELLED` / `COMPLETED` | Qualquer mutação | Rejeitado (422) | — | Estados terminais são imutáveis |
+
+---
+
 ##  Scripts de Banco de Dados e Docker
 
 | Comando npm | Comando Docker equivalente | Descrição |

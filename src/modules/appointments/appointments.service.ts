@@ -1,8 +1,13 @@
 import { AppointmentChannel, AppointmentStatus, Prisma, ServiceItemStatus, UserRole } from "@prisma/client";
 import { appointmentsData } from "./appointments.data";
-import { CreateAppointmentInput, ListAppointmentsQuery } from "./appointments.schema";
+import {
+  CreateAppointmentInput,
+  ListAppointmentsQuery,
+  UpdateAppointmentInput,
+} from "./appointments.schema";
 import {
   AppointmentDetailResponse,
+  AppointmentResponse,
   CreateAppointmentResponse,
   ListAppointmentsResponse,
 } from "./appointments.types";
@@ -10,10 +15,52 @@ import { AuthUser } from "../auth/auth.types";
 import {
   AppError,
   ConflictError,
+  ForbiddenError,
   NotFoundError,
   UnprocessableEntityError,
 } from "../../errors/app.error";
 import { getWeekBoundsInSaoPaulo, parseDateInSaoPaulo } from "../../lib/date";
+
+export function validateStatusTransition(
+  currentStatus: AppointmentStatus,
+  targetStatus: AppointmentStatus
+): void {
+  if (currentStatus === targetStatus) {
+    return;
+  }
+
+  const allowedTransitions: Record<AppointmentStatus, AppointmentStatus[]> = {
+    [AppointmentStatus.PENDING]: [AppointmentStatus.CONFIRMED, AppointmentStatus.CANCELLED],
+    [AppointmentStatus.CONFIRMED]: [
+      AppointmentStatus.COMPLETED,
+      AppointmentStatus.CANCELLED,
+      AppointmentStatus.PENDING,
+    ],
+    [AppointmentStatus.COMPLETED]: [],
+    [AppointmentStatus.CANCELLED]: [],
+  };
+
+  const allowed = allowedTransitions[currentStatus] || [];
+  if (!allowed.includes(targetStatus)) {
+    throw new ConflictError(
+      `Transição de status inválida: não é permitido alterar de ${currentStatus} para ${targetStatus}`
+    );
+  }
+}
+
+function checkClient48HoursRule(
+  currentScheduledAt: Date,
+  action: "alteração" | "cancelamento"
+): void {
+  const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000;
+  const timeDifferenceMs = currentScheduledAt.getTime() - Date.now();
+
+  if (timeDifferenceMs < FORTY_EIGHT_HOURS_MS) {
+    throw new ForbiddenError(
+      `Para ${action} com menos de 48 horas de antecedência, por favor entre em contato diretamente com o salão.`
+    );
+  }
+}
 
 export class AppointmentsService {
   private formatAppointment(appt: {
@@ -240,6 +287,231 @@ export class AppointmentsService {
         total,
         total_pages: Math.ceil(total / query.limit) || 1,
       },
+    };
+  }
+
+  async update(
+    id: number,
+    input: UpdateAppointmentInput,
+    authenticatedUser: AuthUser
+  ): Promise<AppointmentResponse> {
+    const appointment = await appointmentsData.findAppointmentById(id);
+
+    if (!appointment) {
+      throw new NotFoundError("Agendamento não encontrado");
+    }
+
+    if (
+      authenticatedUser.role === UserRole.CLIENT &&
+      appointment.clientId !== authenticatedUser.id
+    ) {
+      throw new NotFoundError("Agendamento não encontrado");
+    }
+
+    if (
+      appointment.status === AppointmentStatus.COMPLETED ||
+      appointment.status === AppointmentStatus.CANCELLED
+    ) {
+      throw new ConflictError(
+        `Não é possível alterar um agendamento com status ${appointment.status}`
+      );
+    }
+
+    if (authenticatedUser.role === UserRole.CLIENT) {
+      checkClient48HoursRule(appointment.scheduledAt, "alteração");
+    }
+
+    // 1. Resolver horários e duração
+    let totalDuration: number;
+    let foundServices: Array<{
+      id: number;
+      name: string;
+      price: Prisma.Decimal | number;
+      durationMinutes: number;
+      active: boolean;
+    }> = [];
+
+    if (input.services !== undefined) {
+      foundServices = await appointmentsData.findServicesByIds(input.services);
+      const foundIds = new Set(foundServices.map((s) => s.id));
+      const missing = input.services.filter((sid) => !foundIds.has(sid));
+
+      if (missing.length > 0) {
+        throw new NotFoundError(`Serviço(s) não encontrado(s): ${missing.join(", ")}`);
+      }
+
+      const inactive = foundServices.filter((s) => !s.active);
+      if (inactive.length > 0) {
+        throw new UnprocessableEntityError(
+          `O serviço "${inactive[0].name}" (ID ${inactive[0].id}) está desativado e não pode ser agendado`
+        );
+      }
+
+      totalDuration = foundServices.reduce((acc, s) => acc + s.durationMinutes, 0);
+    } else {
+      totalDuration = appointment.appointmentServices.reduce(
+        (acc, item) => acc + item.service.durationMinutes,
+        0
+      );
+    }
+
+    const newScheduledAt =
+      input.scheduled_at !== undefined
+        ? new Date(input.scheduled_at)
+        : appointment.scheduledAt;
+
+    const newEndsAt = new Date(newScheduledAt.getTime() + totalDuration * 60 * 1000);
+
+    // 2. Verificar conflito de horário (ignorando o próprio agendamento)
+    const conflict = await appointmentsData.findConflictingAppointment(
+      newScheduledAt,
+      newEndsAt,
+      appointment.id
+    );
+
+    if (conflict) {
+      throw new ConflictError("Já existe um agendamento para este horário");
+    }
+
+    // 3. Preparar itens a adicionar e remover mantendo histórico e snapshots existentes
+    let servicesToRemoveIds: number[] = [];
+    let servicesToAdd: Array<{
+      serviceId: number;
+      priceCharged: number;
+      status: ServiceItemStatus;
+    }> = [];
+
+    if (input.services !== undefined) {
+      const currentServiceIds = new Set(
+        appointment.appointmentServices.map((item) => item.serviceId)
+      );
+      const newServiceIds = new Set(input.services);
+
+      servicesToRemoveIds = appointment.appointmentServices
+        .filter((item) => !newServiceIds.has(item.serviceId))
+        .map((item) => item.serviceId);
+
+      const serviceMap = new Map(foundServices.map((s) => [s.id, s]));
+      const servicesToAddIds = input.services.filter((sid) => !currentServiceIds.has(sid));
+
+      servicesToAdd = servicesToAddIds.map((sid) => {
+        const s = serviceMap.get(sid)!;
+        return {
+          serviceId: s.id,
+          priceCharged: Number(s.price),
+          status: ServiceItemStatus.PENDING,
+        };
+      });
+    }
+
+    // 4. Status após alteração: se CLIENT alterar agendamento CONFIRMED, volta para PENDING
+    let newStatus = appointment.status;
+    if (authenticatedUser.role === UserRole.CLIENT) {
+      if (appointment.status === AppointmentStatus.CONFIRMED) {
+        newStatus = AppointmentStatus.PENDING;
+      }
+    }
+
+    // 5. Executar transação atômica
+    const updated = await appointmentsData.updateAppointmentTransaction({
+      appointmentId: appointment.id,
+      scheduledAt: newScheduledAt,
+      endsAt: newEndsAt,
+      status: newStatus,
+      servicesToRemoveIds,
+      servicesToAdd,
+    });
+
+    return {
+      appointment: this.formatAppointment(updated),
+    };
+  }
+
+  async cancel(id: number, authenticatedUser: AuthUser): Promise<AppointmentResponse> {
+    const appointment = await appointmentsData.findAppointmentById(id);
+
+    if (!appointment) {
+      throw new NotFoundError("Agendamento não encontrado");
+    }
+
+    if (
+      authenticatedUser.role === UserRole.CLIENT &&
+      appointment.clientId !== authenticatedUser.id
+    ) {
+      throw new NotFoundError("Agendamento não encontrado");
+    }
+
+    if (
+      appointment.status === AppointmentStatus.COMPLETED ||
+      appointment.status === AppointmentStatus.CANCELLED
+    ) {
+      throw new ConflictError(
+        `Não é possível cancelar um agendamento com status ${appointment.status}`
+      );
+    }
+
+    if (authenticatedUser.role === UserRole.CLIENT) {
+      checkClient48HoursRule(appointment.scheduledAt, "cancelamento");
+    }
+
+    validateStatusTransition(appointment.status, AppointmentStatus.CANCELLED);
+
+    const cancelled = await appointmentsData.cancelAppointmentTransaction(appointment.id);
+
+    return {
+      appointment: this.formatAppointment(cancelled),
+    };
+  }
+
+  async confirm(id: number, authenticatedUser: AuthUser): Promise<AppointmentResponse> {
+    if (authenticatedUser.role !== UserRole.ADMIN) {
+      throw new ForbiddenError("Acesso negado: permissão restrita a administradores");
+    }
+
+    const appointment = await appointmentsData.findAppointmentById(id);
+
+    if (!appointment) {
+      throw new NotFoundError("Agendamento não encontrado");
+    }
+
+    if (appointment.status !== AppointmentStatus.PENDING) {
+      throw new ConflictError(
+        `Não é possível confirmar um agendamento com status ${appointment.status}`
+      );
+    }
+
+    validateStatusTransition(appointment.status, AppointmentStatus.CONFIRMED);
+
+    const confirmed = await appointmentsData.confirmAppointmentTransaction(appointment.id);
+
+    return {
+      appointment: this.formatAppointment(confirmed),
+    };
+  }
+
+  async complete(id: number, authenticatedUser: AuthUser): Promise<AppointmentResponse> {
+    if (authenticatedUser.role !== UserRole.ADMIN) {
+      throw new ForbiddenError("Acesso negado: permissão restrita a administradores");
+    }
+
+    const appointment = await appointmentsData.findAppointmentById(id);
+
+    if (!appointment) {
+      throw new NotFoundError("Agendamento não encontrado");
+    }
+
+    if (appointment.status !== AppointmentStatus.CONFIRMED) {
+      throw new ConflictError(
+        `Não é possível concluir um agendamento com status ${appointment.status}`
+      );
+    }
+
+    validateStatusTransition(appointment.status, AppointmentStatus.COMPLETED);
+
+    const completed = await appointmentsData.completeAppointmentTransaction(appointment.id);
+
+    return {
+      appointment: this.formatAppointment(completed),
     };
   }
 }
