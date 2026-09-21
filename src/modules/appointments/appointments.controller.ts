@@ -3,6 +3,7 @@ import {
   appointmentIdParamSchema,
   createAppointmentSchema,
   listAppointmentsQuerySchema,
+  updateAppointmentSchema,
 } from "./appointments.schema";
 import { appointmentsService } from "./appointments.service";
 
@@ -31,6 +32,47 @@ export class AppointmentsController {
     try {
       const query = listAppointmentsQuerySchema.parse(req.query);
       const result = await appointmentsService.list(query, req.user!);
+      res.status(200).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async update(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { id } = appointmentIdParamSchema.parse(req.params);
+      const data = updateAppointmentSchema.parse(req.body);
+      const result = await appointmentsService.update(id, data, req.user!);
+      res.status(200).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async cancel(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { id } = appointmentIdParamSchema.parse(req.params);
+      const result = await appointmentsService.cancel(id, req.user!);
+      res.status(200).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async confirm(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { id } = appointmentIdParamSchema.parse(req.params);
+      const result = await appointmentsService.confirm(id, req.user!);
+      res.status(200).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async complete(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { id } = appointmentIdParamSchema.parse(req.params);
+      const result = await appointmentsService.complete(id, req.user!);
       res.status(200).json(result);
     } catch (error) {
       next(error);

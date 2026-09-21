@@ -4,7 +4,8 @@ import request from "supertest";
 import app from "../src/app";
 import prisma from "../src/lib/prisma";
 import { generateToken } from "../src/lib/jwt";
-import { UserRole, AppointmentChannel, AppointmentStatus } from "@prisma/client";
+import { UserRole, AppointmentChannel, AppointmentStatus, ServiceItemStatus } from "@prisma/client";
+import { validateStatusTransition } from "../src/modules/appointments/appointments.service";
 
 describe("Feature: Appointments (Agendamentos)", () => {
   let adminUser: { id: number; email: string };
@@ -17,9 +18,24 @@ describe("Feature: Appointments (Agendamentos)", () => {
 
   let service1Id: number;
   let service2Id: number;
+  let service3Id: number;
   let inactiveServiceId: number;
 
   before(async () => {
+    // 0. Limpar agendamentos anteriores de testes com emails de teste
+    await prisma.appointmentService.deleteMany({
+      where: {
+        appointment: {
+          client: { email: { contains: "appt_test" } },
+        },
+      },
+    });
+    await prisma.appointment.deleteMany({
+      where: {
+        client: { email: { contains: "appt_test" } },
+      },
+    });
+
     // 1. Criar usuários de teste
     const admin = await prisma.user.upsert({
       where: { email: "admin_appt_test@leilahairbeauty.com" },
@@ -93,6 +109,17 @@ describe("Feature: Appointments (Agendamentos)", () => {
       },
     });
     inactiveServiceId = s3.id;
+
+    const s4 = await prisma.service.create({
+      data: {
+        name: "Manicure Appt Test",
+        description: "Manicure de teste",
+        durationMinutes: 20,
+        price: 30.0,
+        active: true,
+      },
+    });
+    service3Id = s4.id;
   });
 
   after(async () => {
@@ -122,7 +149,7 @@ describe("Feature: Appointments (Agendamentos)", () => {
     // Limpeza de serviços de teste
     await prisma.service.deleteMany({
       where: {
-        id: { in: [service1Id, service2Id, inactiveServiceId] },
+        id: { in: [service1Id, service2Id, service3Id, inactiveServiceId] },
       },
     });
 
@@ -731,6 +758,845 @@ describe("Feature: Appointments (Agendamentos)", () => {
       }
 
       assert.strictEqual(constraintErrorCaught, true);
+    });
+  });
+
+  let nextTestSlotHour = 500;
+  function getTestTimeSlot(): Date {
+    nextTestSlotHour += 100;
+    return new Date(Date.now() + nextTestSlotHour * 3600000);
+  }
+
+  describe("8. PATCH /appointments/:id (Alteração de horário e serviços)", () => {
+    it("deve permitir que o CLIENT altere o próprio agendamento com >= 48h de antecedência", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const newScheduledAt = new Date(scheduledAt.getTime() + 86400000).toISOString();
+      const res = await request(app)
+        .patch(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${client1Token}`)
+        .send({ scheduled_at: newScheduledAt });
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.appointment.id, appt.id);
+      assert.strictEqual(
+        new Date(res.body.appointment.scheduled_at).toISOString(),
+        new Date(newScheduledAt).toISOString()
+      );
+      assert.strictEqual(res.body.appointment.duration, 30);
+    });
+
+    it("deve retornar 403 quando CLIENT tentar alterar agendamento com menos de 48h de antecedência", async () => {
+      const scheduledAt = new Date(Date.now() + 20 * 3600000); // 20h (< 48h)
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${client1Token}`)
+        .send({ scheduled_at: new Date(Date.now() + 7 * 86400000).toISOString() });
+
+      assert.strictEqual(res.status, 403);
+      assert.match(res.body.message, /48 horas de antecedência/i);
+    });
+
+    it("deve permitir que o ADMIN altere agendamento mesmo com menos de 48h de antecedência", async () => {
+      const scheduledAt = new Date(Date.now() + 22 * 3600000); // 22h (< 48h)
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const newScheduledAt = new Date(Date.now() + 8 * 86400000).toISOString();
+      const res = await request(app)
+        .patch(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ scheduled_at: newScheduledAt });
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(
+        new Date(res.body.appointment.scheduled_at).toISOString(),
+        new Date(newScheduledAt).toISOString()
+      );
+    });
+
+    it("deve retornar 404 quando CLIENT tentar alterar agendamento de outro cliente", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${client2Token}`)
+        .send({ scheduled_at: new Date(scheduledAt.getTime() + 86400000).toISOString() });
+
+      assert.strictEqual(res.status, 404);
+      assert.strictEqual(res.body.message, "Agendamento não encontrado");
+    });
+
+    it("deve alterar status de CONFIRMED para PENDING quando CLIENT alterar o agendamento", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: adminUser.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.CONFIRMED,
+          channel: AppointmentChannel.PHONE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${client1Token}`)
+        .send({ scheduled_at: new Date(scheduledAt.getTime() + 86400000).toISOString() });
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.appointment.status, "PENDING");
+    });
+
+    it("deve manter o status CONFIRMED quando ADMIN alterar o agendamento", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: adminUser.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.CONFIRMED,
+          channel: AppointmentChannel.PHONE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ scheduled_at: new Date(scheduledAt.getTime() + 86400000).toISOString() });
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.appointment.status, "CONFIRMED");
+    });
+
+    it("deve retornar 400 se nenhum campo for informado ({})", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({});
+
+      assert.strictEqual(res.status, 400);
+      assert.strictEqual(res.body.message, "Dados de entrada inválidos");
+    });
+
+    it("deve retornar 400 se a lista de serviços enviada for vazia ou tiver duplicatas", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      // Vazio
+      const resEmpty = await request(app)
+        .patch(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ services: [] });
+      assert.strictEqual(resEmpty.status, 400);
+
+      // Duplicatas
+      const resDup = await request(app)
+        .patch(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ services: [service1Id, service1Id] });
+      assert.strictEqual(resDup.status, 400);
+    });
+
+    it("deve retornar 422 se algum serviço enviado estiver inativo", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ services: [inactiveServiceId] });
+
+      assert.strictEqual(res.status, 422);
+      assert.match(res.body.message, /desativado/i);
+    });
+
+    it("deve preservar o price_charged dos serviços mantidos e aplicar o preço atual nos novos serviços", async () => {
+      const scheduledAt = getTestTimeSlot();
+      // Criar agendamento com service1 a preço 50.0
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      // Modificar o preço do service1 no catálogo para 999.00
+      await prisma.service.update({
+        where: { id: service1Id },
+        data: { price: 999.0 },
+      });
+
+      try {
+        // Alterar agendamento para incluir service3Id (preço 30.00) mantendo service1Id
+        const res = await request(app)
+          .patch(`/appointments/${appt.id}`)
+          .set("Authorization", `Bearer ${adminToken}`)
+          .send({ services: [service1Id, service3Id] });
+
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(res.body.appointment.services.length, 2);
+
+        const item1 = res.body.appointment.services.find(
+          (s: { service_id: number }) => s.service_id === service1Id
+        );
+        const item3 = res.body.appointment.services.find(
+          (s: { service_id: number }) => s.service_id === service3Id
+        );
+
+        // O item mantido deve PRESERVAR o price_charged original (50.00), e NÃO 999.00!
+        assert.strictEqual(item1.price_charged, 50.0);
+        // O novo item deve usar o preço atual do momento da adição (30.00)
+        assert.strictEqual(item3.price_charged, 30.0);
+        assert.strictEqual(res.body.appointment.total, 80.0);
+      } finally {
+        // Restaurar o preço do service1
+        await prisma.service.update({
+          where: { id: service1Id },
+          data: { price: 50.0 },
+        });
+      }
+    });
+
+    it("deve remover do agendamento os serviços excluídos da nova composição", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 75 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: [
+              { serviceId: service1Id, priceCharged: 50.0 },
+              { serviceId: service2Id, priceCharged: 40.0 },
+            ],
+          },
+        },
+      });
+
+      // Manter apenas service2Id
+      const res = await request(app)
+        .patch(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ services: [service2Id] });
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.appointment.services.length, 1);
+      assert.strictEqual(res.body.appointment.services[0].service_id, service2Id);
+      assert.strictEqual(res.body.appointment.duration, 45);
+    });
+
+    it("deve retornar 409 quando o novo horário/duração entrar em conflito com outro agendamento", async () => {
+      const timeA = getTestTimeSlot();
+
+      await prisma.appointment.create({
+        data: {
+          clientId: client2.id,
+          createdBy: adminUser.id,
+          scheduledAt: timeA,
+          endsAt: new Date(timeA.getTime() + 60 * 60000),
+          status: AppointmentStatus.CONFIRMED,
+          channel: AppointmentChannel.PHONE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const timeB = getTestTimeSlot();
+
+      const apptB = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt: timeB,
+          endsAt: new Date(timeB.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      // Tentar alterar B para sobrepor timeA
+      const conflictTime = new Date(timeA.getTime() + 15 * 60000).toISOString();
+      const res = await request(app)
+        .patch(`/appointments/${apptB.id}`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ scheduled_at: conflictTime });
+
+      assert.strictEqual(res.status, 409);
+      assert.match(res.body.message, /Já existe um agendamento para este horário/i);
+    });
+
+    it("NÃO deve dar conflito com o próprio agendamento ao manter ou alterar horário", async () => {
+      const timeC = getTestTimeSlot();
+
+      const apptC = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt: timeC,
+          endsAt: new Date(timeC.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      // Alterar para adicionar service3Id (duration passa de 30m para 50m)
+      const res = await request(app)
+        .patch(`/appointments/${apptC.id}`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ services: [service1Id, service3Id] });
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.appointment.duration, 50);
+    });
+
+    it("deve retornar 409 ao tentar alterar agendamento com status CANCELLED ou COMPLETED", async () => {
+      const scheduledAt1 = getTestTimeSlot();
+
+      const cancelledAppt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt: scheduledAt1,
+          endsAt: new Date(scheduledAt1.getTime() + 30 * 60000),
+          status: AppointmentStatus.CANCELLED,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const resCancel = await request(app)
+        .patch(`/appointments/${cancelledAppt.id}`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ scheduled_at: new Date(scheduledAt1.getTime() + 86400000).toISOString() });
+
+      assert.strictEqual(resCancel.status, 409);
+      assert.match(resCancel.body.message, /Não é possível alterar um agendamento/i);
+
+      const scheduledAt2 = getTestTimeSlot();
+      const completedAppt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt: scheduledAt2,
+          endsAt: new Date(scheduledAt2.getTime() + 30 * 60000),
+          status: AppointmentStatus.COMPLETED,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const resComp = await request(app)
+        .patch(`/appointments/${completedAppt.id}`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ scheduled_at: new Date(scheduledAt2.getTime() + 86400000).toISOString() });
+
+      assert.strictEqual(resComp.status, 409);
+      assert.match(resComp.body.message, /Não é possível alterar um agendamento/i);
+    });
+  });
+
+  describe("9. DELETE /appointments/:id (Cancelamento lógico)", () => {
+    it("deve permitir que o CLIENT cancele o próprio agendamento com >= 48h de antecedência", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const res = await request(app)
+        .delete(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${client1Token}`);
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.appointment.status, "CANCELLED");
+
+      // Registro deve permanecer fisicamente no banco
+      const inDb = await prisma.appointment.findUnique({ where: { id: appt.id } });
+      assert.ok(inDb !== null);
+      assert.strictEqual(inDb.status, "CANCELLED");
+    });
+
+    it("deve retornar 403 quando CLIENT tentar cancelar com menos de 48h de antecedência", async () => {
+      const scheduledAt = new Date(Date.now() + 24 * 3600000); // 24h
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const res = await request(app)
+        .delete(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${client1Token}`);
+
+      assert.strictEqual(res.status, 403);
+      assert.match(res.body.message, /48 horas de antecedência/i);
+    });
+
+    it("deve permitir que o ADMIN cancele qualquer agendamento sem restrição de prazo", async () => {
+      const scheduledAt = new Date(Date.now() + 26 * 3600000); // 26h (< 48h)
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const res = await request(app)
+        .delete(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.appointment.status, "CANCELLED");
+    });
+
+    it("deve retornar 404 quando CLIENT tentar cancelar agendamento de outro cliente", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const res = await request(app)
+        .delete(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${client2Token}`);
+
+      assert.strictEqual(res.status, 404);
+      assert.strictEqual(res.body.message, "Agendamento não encontrado");
+    });
+
+    it("deve atualizar itens pendentes para CANCELLED e preservar itens COMPLETED", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: adminUser.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 75 * 60000),
+          status: AppointmentStatus.CONFIRMED,
+          channel: AppointmentChannel.PHONE,
+          appointmentServices: {
+            create: [
+              {
+                serviceId: service1Id,
+                priceCharged: 50.0,
+                status: ServiceItemStatus.COMPLETED, // Já concluído
+              },
+              {
+                serviceId: service2Id,
+                priceCharged: 40.0,
+                status: ServiceItemStatus.PENDING, // Pendente
+              },
+            ],
+          },
+        },
+      });
+
+      const res = await request(app)
+        .delete(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.appointment.status, "CANCELLED");
+
+      const item1 = res.body.appointment.services.find(
+        (s: { service_id: number }) => s.service_id === service1Id
+      );
+      const item2 = res.body.appointment.services.find(
+        (s: { service_id: number }) => s.service_id === service2Id
+      );
+
+      assert.strictEqual(item1.status, "COMPLETED");
+      assert.strictEqual(item2.status, "CANCELLED");
+    });
+
+    it("deve retornar 409 ao tentar cancelar agendamento já CANCELLED ou COMPLETED", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.CANCELLED,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const res = await request(app)
+        .delete(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      assert.strictEqual(res.status, 409);
+      assert.match(res.body.message, /Não é possível cancelar um agendamento/i);
+    });
+  });
+
+  describe("10. PATCH /appointments/:id/confirm (Confirmação por ADMIN)", () => {
+    it("deve permitir que o ADMIN confirme agendamento com status PENDING -> CONFIRMED", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/appointments/${appt.id}/confirm`)
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.appointment.status, "CONFIRMED");
+    });
+
+    it("deve rejeitar confirmação por usuário CLIENT com HTTP 403", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/appointments/${appt.id}/confirm`)
+        .set("Authorization", `Bearer ${client1Token}`);
+
+      assert.strictEqual(res.status, 403);
+      assert.match(res.body.message, /restrita a administradores/i);
+    });
+
+    it("deve retornar 409 ao tentar confirmar agendamento que não esteja PENDING", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: adminUser.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.CONFIRMED,
+          channel: AppointmentChannel.PHONE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/appointments/${appt.id}/confirm`)
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      assert.strictEqual(res.status, 409);
+      assert.match(res.body.message, /Não é possível confirmar/i);
+    });
+
+    it("deve retornar 404 para confirmação de agendamento inexistente", async () => {
+      const res = await request(app)
+        .patch("/appointments/999999/confirm")
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      assert.strictEqual(res.status, 404);
+      assert.strictEqual(res.body.message, "Agendamento não encontrado");
+    });
+  });
+
+  describe("11. PATCH /appointments/:id/complete (Conclusão por ADMIN)", () => {
+    it("deve permitir que o ADMIN conclua agendamento com status CONFIRMED -> COMPLETED", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: adminUser.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.CONFIRMED,
+          channel: AppointmentChannel.PHONE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/appointments/${appt.id}/complete`)
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.appointment.status, "COMPLETED");
+      assert.strictEqual(res.body.appointment.services[0].status, "COMPLETED");
+    });
+
+    it("deve rejeitar conclusão por usuário CLIENT com HTTP 403", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: adminUser.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.CONFIRMED,
+          channel: AppointmentChannel.PHONE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/appointments/${appt.id}/complete`)
+        .set("Authorization", `Bearer ${client1Token}`);
+
+      assert.strictEqual(res.status, 403);
+      assert.match(res.body.message, /restrita a administradores/i);
+    });
+
+    it("deve retornar 409 ao tentar concluir agendamento com status PENDING ou CANCELLED", async () => {
+      const scheduledAt = getTestTimeSlot();
+      const pendingAppt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/appointments/${pendingAppt.id}/complete`)
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      assert.strictEqual(res.status, 409);
+      assert.match(res.body.message, /Não é possível concluir/i);
+    });
+
+    it("deve retornar 404 para conclusão de agendamento inexistente", async () => {
+      const res = await request(app)
+        .patch("/appointments/999999/complete")
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      assert.strictEqual(res.status, 404);
+      assert.strictEqual(res.body.message, "Agendamento não encontrado");
+    });
+  });
+
+  describe("12. Regras de Transição de Status Centralizadas", () => {
+    it("deve permitir transições válidas e rejeitar transições inválidas na máquina de estados", () => {
+      // Válidas
+      assert.doesNotThrow(() =>
+        validateStatusTransition(AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED)
+      );
+      assert.doesNotThrow(() =>
+        validateStatusTransition(AppointmentStatus.PENDING, AppointmentStatus.CANCELLED)
+      );
+      assert.doesNotThrow(() =>
+        validateStatusTransition(AppointmentStatus.CONFIRMED, AppointmentStatus.COMPLETED)
+      );
+      assert.doesNotThrow(() =>
+        validateStatusTransition(AppointmentStatus.CONFIRMED, AppointmentStatus.CANCELLED)
+      );
+      assert.doesNotThrow(() =>
+        validateStatusTransition(AppointmentStatus.CONFIRMED, AppointmentStatus.PENDING)
+      );
+      assert.doesNotThrow(() =>
+        validateStatusTransition(AppointmentStatus.PENDING, AppointmentStatus.PENDING)
+      );
+
+      // Inválidas: PENDING -> COMPLETED
+      assert.throws(
+        () => validateStatusTransition(AppointmentStatus.PENDING, AppointmentStatus.COMPLETED),
+        /Transição de status inválida/
+      );
+
+      // Inválidas a partir de CANCELLED
+      assert.throws(
+        () => validateStatusTransition(AppointmentStatus.CANCELLED, AppointmentStatus.CONFIRMED),
+        /Transição de status inválida/
+      );
+      assert.throws(
+        () => validateStatusTransition(AppointmentStatus.CANCELLED, AppointmentStatus.COMPLETED),
+        /Transição de status inválida/
+      );
+
+      // Inválidas a partir de COMPLETED
+      assert.throws(
+        () => validateStatusTransition(AppointmentStatus.COMPLETED, AppointmentStatus.CANCELLED),
+        /Transição de status inválida/
+      );
     });
   });
 });

@@ -15,6 +15,19 @@ export interface CreateAppointmentData {
   }>;
 }
 
+export interface UpdateAppointmentData {
+  appointmentId: number;
+  scheduledAt: Date;
+  endsAt: Date;
+  status: AppointmentStatus;
+  servicesToRemoveIds: number[];
+  servicesToAdd: Array<{
+    serviceId: number;
+    priceCharged: number;
+    status: ServiceItemStatus;
+  }>;
+}
+
 export interface ListAppointmentsFilters {
   clientId?: number;
   status?: AppointmentStatus;
@@ -37,12 +50,17 @@ export class AppointmentsData {
     });
   }
 
-  async findConflictingAppointment(scheduledAt: Date, endsAt: Date) {
+  async findConflictingAppointment(
+    scheduledAt: Date,
+    endsAt: Date,
+    excludeAppointmentId?: number
+  ) {
     return prisma.appointment.findFirst({
       where: {
         status: { in: [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED] },
         scheduledAt: { lt: endsAt },
         endsAt: { gt: scheduledAt },
+        id: excludeAppointmentId ? { not: excludeAppointmentId } : undefined,
       },
     });
   }
@@ -78,6 +96,173 @@ export class AppointmentsData {
       // 3. Retornar com os relacionamentos carregados
       return tx.appointment.findUniqueOrThrow({
         where: { id: appointment.id },
+        include: {
+          client: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              phone: true,
+            },
+          },
+          appointmentServices: {
+            include: {
+              service: true,
+            },
+          },
+        },
+      });
+    });
+  }
+
+  async updateAppointmentTransaction(data: UpdateAppointmentData) {
+    return prisma.$transaction(async (tx) => {
+      // 1. Remover serviços que não fazem mais parte da composição
+      if (data.servicesToRemoveIds.length > 0) {
+        await tx.appointmentService.deleteMany({
+          where: {
+            appointmentId: data.appointmentId,
+            serviceId: { in: data.servicesToRemoveIds },
+          },
+        });
+      }
+
+      // 2. Adicionar novos serviços com snapshot do preço vigente
+      if (data.servicesToAdd.length > 0) {
+        await Promise.all(
+          data.servicesToAdd.map((item) =>
+            tx.appointmentService.create({
+              data: {
+                appointmentId: data.appointmentId,
+                serviceId: item.serviceId,
+                priceCharged: item.priceCharged,
+                status: item.status,
+              },
+            })
+          )
+        );
+      }
+
+      // 3. Atualizar agendamento (scheduledAt, endsAt, status)
+      await tx.appointment.update({
+        where: { id: data.appointmentId },
+        data: {
+          scheduledAt: data.scheduledAt,
+          endsAt: data.endsAt,
+          status: data.status,
+        },
+      });
+
+      // 4. Retornar agendamento com dados completos
+      return tx.appointment.findUniqueOrThrow({
+        where: { id: data.appointmentId },
+        include: {
+          client: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              phone: true,
+            },
+          },
+          appointmentServices: {
+            include: {
+              service: true,
+            },
+          },
+        },
+      });
+    });
+  }
+
+  async cancelAppointmentTransaction(appointmentId: number) {
+    return prisma.$transaction(async (tx) => {
+      // 1. Atualizar agendamento para CANCELLED
+      await tx.appointment.update({
+        where: { id: appointmentId },
+        data: { status: AppointmentStatus.CANCELLED },
+      });
+
+      // 2. Atualizar todos os appointment_services não concluídos para CANCELLED
+      await tx.appointmentService.updateMany({
+        where: {
+          appointmentId,
+          status: { not: ServiceItemStatus.COMPLETED },
+        },
+        data: {
+          status: ServiceItemStatus.CANCELLED,
+        },
+      });
+
+      // 3. Retornar com dados completos
+      return tx.appointment.findUniqueOrThrow({
+        where: { id: appointmentId },
+        include: {
+          client: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              phone: true,
+            },
+          },
+          appointmentServices: {
+            include: {
+              service: true,
+            },
+          },
+        },
+      });
+    });
+  }
+
+  async confirmAppointmentTransaction(appointmentId: number) {
+    return prisma.$transaction(async (tx) => {
+      await tx.appointment.update({
+        where: { id: appointmentId },
+        data: { status: AppointmentStatus.CONFIRMED },
+      });
+
+      return tx.appointment.findUniqueOrThrow({
+        where: { id: appointmentId },
+        include: {
+          client: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              phone: true,
+            },
+          },
+          appointmentServices: {
+            include: {
+              service: true,
+            },
+          },
+        },
+      });
+    });
+  }
+
+  async completeAppointmentTransaction(appointmentId: number) {
+    return prisma.$transaction(async (tx) => {
+      await tx.appointment.update({
+        where: { id: appointmentId },
+        data: { status: AppointmentStatus.COMPLETED },
+      });
+
+      await tx.appointmentService.updateMany({
+        where: {
+          appointmentId,
+          status: { not: ServiceItemStatus.CANCELLED },
+        },
+        data: {
+          status: ServiceItemStatus.COMPLETED,
+        },
+      });
+
+      return tx.appointment.findUniqueOrThrow({
+        where: { id: appointmentId },
         include: {
           client: {
             select: {

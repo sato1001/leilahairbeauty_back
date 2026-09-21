@@ -35,6 +35,10 @@ export interface SameWeekSuggestion {
   reference_appointment_id: number;
 }
 
+export interface AppointmentResponse {
+  appointment: AppointmentDetailResponse;
+}
+
 export interface CreateAppointmentResponse {
   appointment: AppointmentDetailResponse;
   suggestion?: SameWeekSuggestion;
