@@ -184,6 +184,78 @@ Retorna os dados públicos do usuário logado a partir do token JWT.
 
 ---
 
+##  Endpoints de Serviços (`/services`)
+
+Gerenciamento do catálogo de serviços do salão com suporte a **Soft Delete**.
+
+### 1. Listar Serviços Ativos (`GET /services`)
+* **Acesso**: Público.
+* **Comportamento**: Retorna apenas os serviços com `active: true`.
+* **Resposta (HTTP 200 OK)**:
+```json
+{
+  "services": [
+    {
+      "id": 1,
+      "name": "Corte Feminino",
+      "description": "Corte personalizado com lavagem",
+      "duration_minutes": 45,
+      "price": 80,
+      "active": true,
+      "created_at": "2026-09-20T17:36:57.368Z",
+      "updated_at": "2026-09-20T17:36:57.368Z"
+    }
+  ]
+}
+```
+
+### 2. Buscar Serviço por ID (`GET /services/:id`)
+* **Acesso**: Público.
+* **Comportamento**: Retorna os detalhes de um serviço ativo. Retorna `404 Not Found` caso o serviço não exista ou esteja desativado.
+
+### 3. Criar Serviço (`POST /services`)
+* **Acesso**: Restrito a administradores (`ADMIN`).
+* **Headers**: `Authorization: Bearer <token_admin>`
+* **Request**:
+```json
+{
+  "name": "Design de Sobrancelhas",
+  "description": "Alinhamento e design facial",
+  "duration_minutes": 30,
+  "price": 45.00
+}
+```
+* **Resposta (HTTP 201 Created)**
+
+### 4. Atualizar Serviço (`PATCH /services/:id`)
+* **Acesso**: Restrito a administradores (`ADMIN`).
+* **Headers**: `Authorization: Bearer <token_admin>`
+* **Request**: campos parciais (`name`, `description`, `duration_minutes`, `price`, `active`).
+
+### 5. Exclusão Lógica (`DELETE /services/:id`)
+* **Acesso**: Restrito a administradores (`ADMIN`).
+* **Headers**: `Authorization: Bearer <token_admin>`
+* **Regra de Negócio (Soft Delete)**:
+  * O método HTTP permanece `DELETE`.
+  * O registro **não é removido fisicamente do banco de dados**.
+  * O status é alterado para `active = false`.
+  * Preserva integralmente o histórico de agendamentos (`appointment_services`) e o `price_charged` registrado.
+  * O serviço desativado deixa de aparecer na listagem pública `GET /services` e retorna `404` em `GET /services/:id`.
+* **Resposta (HTTP 200 OK)**:
+```json
+{
+  "message": "Serviço desativado com sucesso",
+  "service": {
+    "id": 1,
+    "name": "Corte Feminino",
+    "active": false,
+    "updated_at": "2026-09-20T22:30:00.000Z"
+  }
+}
+```
+
+---
+
 ##  Scripts de Banco de Dados e Docker
 
 | Comando npm | Comando Docker equivalente | Descrição |
