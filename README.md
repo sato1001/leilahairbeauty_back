@@ -256,6 +256,158 @@ Gerenciamento do catálogo de serviços do salão com suporte a **Soft Delete**.
 
 ---
 
+##  Endpoints de Agendamentos (`/appointments`)
+
+Gerenciamento de agendamentos online e presenciais do salão, com cálculo automático de duração e horário de término, prevenção de sobreposição de horários e integridade transacional.
+
+### 1. Criar Agendamento (`POST /appointments`)
+* **Acesso**: Requer autenticação (`CLIENT` ou `ADMIN`).
+* **Headers**: `Authorization: Bearer <token_jwt>`
+* **Regras de Negócio**:
+  * **Perfil CLIENT**:
+    * O agendamento é atribuído automaticamente ao próprio cliente (`clientId = userId`, `createdBy = userId`).
+    * Canal definido como `ONLINE`.
+    * Status inicial definido como `PENDING`.
+  * **Perfil ADMIN**:
+    * Requer informar o `client_id` de um usuário com perfil `CLIENT`.
+    * Canal definido como `PHONE` (ou balcão).
+    * Status inicial definido como `CONFIRMED`.
+  * **Cálculo de Duração e Término**:
+    * Duração total calculada somando os minutos de todos os serviços solicitados.
+    * `ends_at = scheduled_at + duracao_total`.
+  * **Snapshot de Preço**:
+    * Os preços atuais dos serviços são congelados na tabela `appointment_services` no campo `price_charged`.
+  * **Validações**:
+    * Serviços duplicados no mesmo agendamento são rejeitados (`400 Bad Request`).
+    * Serviço inexistente retorna `404 Not Found`.
+    * Serviço desativado (`active: false`) retorna `422 Unprocessable Entity`.
+    * Data no passado é rejeitada (`400 Bad Request`).
+  * **Proteção contra Conflito de Horário**:
+    * Validação em nível de serviço e garantia física no PostgreSQL via **Exclusion Constraint** (`EXCLUDE USING gist ...`).
+    * Agendamentos sobrepostos com status `PENDING` ou `CONFIRMED` retornam `409 Conflict`.
+    * Intervalos contíguos (ex: 14:00-14:30 e 14:30-15:00) são permitidos.
+  * **Sugestão de Mesma Semana**:
+    * Caso o cliente já possua outro agendamento ativo na mesma semana (segunda a domingo no fuso `America/Sao_Paulo`), a resposta inclui um objeto `suggestion` para facilitar a conciliação de horários (sem bloquear a criação).
+
+* **Exemplo de Requisição (CLIENT)**:
+```json
+{
+  "scheduled_at": "2026-10-15T14:00:00.000Z",
+  "services": [1, 2]
+}
+```
+
+* **Exemplo de Resposta (HTTP 201 Created)**:
+```json
+{
+  "appointment": {
+    "id": 10,
+    "client_id": 3,
+    "client": {
+      "id": 3,
+      "name": "Maria Oliveira",
+      "email": "maria@email.com",
+      "phone": "18999991111"
+    },
+    "created_by": 3,
+    "scheduled_at": "2026-10-15T14:00:00.000Z",
+    "ends_at": "2026-10-15T15:15:00.000Z",
+    "duration": 75,
+    "total": 120.00,
+    "status": "PENDING",
+    "channel": "ONLINE",
+    "services": [
+      {
+        "service_id": 1,
+        "service_name": "Corte Feminino",
+        "price_charged": 80.00,
+        "status": "PENDING"
+      },
+      {
+        "service_id": 2,
+        "service_name": "Escova",
+        "price_charged": 40.00,
+        "status": "PENDING"
+      }
+    ],
+    "created_at": "2026-09-21T01:30:00.000Z",
+    "updated_at": "2026-09-21T01:30:00.000Z"
+  },
+  "suggestion": {
+    "suggested_date": "2026-10-14T10:00:00.000Z",
+    "reference_appointment_id": 8
+  }
+}
+```
+
+---
+
+### 2. Buscar Agendamento por ID (`GET /appointments/:id`)
+* **Acesso**: Requer autenticação (`CLIENT` ou `ADMIN`).
+* **Headers**: `Authorization: Bearer <token_jwt>`
+* **Regras de Autorização**:
+  * Usuários `CLIENT` só podem visualizar seus próprios agendamentos. A tentativa de acessar agendamento de outro cliente retorna `404 Not Found` (evitando enumeração de recursos).
+  * Usuários `ADMIN` podem visualizar qualquer agendamento.
+* **Resposta (HTTP 200 OK)**:
+```json
+{
+  "appointment": {
+    "id": 10,
+    "client_id": 3,
+    "client": {
+      "id": 3,
+      "name": "Maria Oliveira",
+      "email": "maria@email.com",
+      "phone": "18999991111"
+    },
+    "scheduled_at": "2026-10-15T14:00:00.000Z",
+    "ends_at": "2026-10-15T15:15:00.000Z",
+    "duration": 75,
+    "total": 120.00,
+    "status": "PENDING",
+    "channel": "ONLINE",
+    "services": [
+      {
+        "service_id": 1,
+        "service_name": "Corte Feminino",
+        "price_charged": 80.00,
+        "status": "PENDING"
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 3. Listar Agendamentos (`GET /appointments`)
+* **Acesso**: Requer autenticação (`CLIENT` ou `ADMIN`).
+* **Headers**: `Authorization: Bearer <token_jwt>`
+* **Parâmetros de Query**:
+  * `page` (opcional, padrão: `1`): número da página.
+  * `limit` (opcional, padrão: `10`, máx: `100`): itens por página.
+  * `status` (opcional): filtro por enum (`PENDING`, `CONFIRMED`, `CANCELLED`, `COMPLETED`).
+  * `client_id` (opcional, apenas para `ADMIN`): filtra agendamentos de um cliente específico.
+  * `start_date` (opcional): formato `YYYY-MM-DD` (início do dia em `America/Sao_Paulo`).
+  * `end_date` (opcional): formato `YYYY-MM-DD` (fim do dia em `America/Sao_Paulo`).
+* **Comportamento por Perfil**:
+  * `CLIENT`: retorna exclusivamente os agendamentos pertencentes ao usuário logado.
+  * `ADMIN`: retorna agendamentos do sistema todo, com suporte aos filtros avançados.
+* **Resposta (HTTP 200 OK)**:
+```json
+{
+  "appointments": [ ... ],
+  "pagination": {
+    "page": 1,
+    "limit": 10,
+    "total": 1,
+    "total_pages": 1
+  }
+}
+```
+
+---
+
 ##  Scripts de Banco de Dados e Docker
 
 | Comando npm | Comando Docker equivalente | Descrição |

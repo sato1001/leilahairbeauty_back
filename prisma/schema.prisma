@@ -76,6 +76,7 @@ model Appointment {
   clientId    Int                @map("client_id")
   createdBy   Int                @map("created_by")
   scheduledAt DateTime           @map("scheduled_at") @db.Timestamptz(6)
+  endsAt      DateTime           @map("ends_at") @db.Timestamptz(6)
   status      AppointmentStatus  @default(PENDING)
   channel     AppointmentChannel @default(ONLINE)
   createdAt   DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
