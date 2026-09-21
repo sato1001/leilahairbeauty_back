@@ -27,7 +27,13 @@ export class NotFoundError extends AppError {
 }
 
 export class ConflictError extends AppError {
-  constructor(message = "Email já cadastrado") {
+  constructor(message = "Conflito identificado") {
     super(message, 409);
+  }
+}
+
+export class UnprocessableEntityError extends AppError {
+  constructor(message: string) {
+    super(message, 422);
   }
 }

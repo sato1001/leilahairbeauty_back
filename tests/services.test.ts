@@ -76,6 +76,7 @@ describe("Feature: Services (com Soft Delete)", () => {
         clientId: clientUser.id,
         createdBy: adminUser.id,
         scheduledAt: new Date(Date.now() + 86400000),
+        endsAt: new Date(Date.now() + 86400000 + 3600000),
         status: AppointmentStatus.CONFIRMED,
         channel: AppointmentChannel.ONLINE,
       },

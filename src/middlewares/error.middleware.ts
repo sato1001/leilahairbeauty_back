@@ -35,6 +35,16 @@ export function errorMiddleware(
       });
       return;
     }
+
+    if (
+      error.code === "P2004" ||
+      error.message?.includes("no_overlapping_active_appointments")
+    ) {
+      res.status(409).json({
+        message: "Já existe um agendamento para este horário",
+      });
+      return;
+    }
   }
 
   res.status(500).json({
