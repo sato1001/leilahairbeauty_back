@@ -42,9 +42,9 @@ enum AppointmentChannel {
 model User {
   id           Int      @id @default(autoincrement())
   name         String   @db.VarChar(100)
-  email        String   @unique @db.VarChar(150)
+  email        String?  @unique @db.VarChar(150)
   phone        String?  @db.VarChar(20)
-  passwordHash String   @map("password_hash") @db.VarChar(255)
+  passwordHash String?  @map("password_hash") @db.VarChar(255)
   role         UserRole @default(CLIENT)
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -109,4 +109,3 @@ model AppointmentService {
   @@index([serviceId])
   @@map("appointment_services")
 }
-

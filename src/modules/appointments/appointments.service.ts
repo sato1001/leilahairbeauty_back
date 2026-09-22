@@ -1,8 +1,13 @@
+import bcrypt from "bcryptjs";
 import { AppointmentChannel, AppointmentStatus, Prisma, ServiceItemStatus, UserRole } from "@prisma/client";
+import prisma from "../../lib/prisma";
+import { normalizePhone } from "../../lib/phone";
 import { appointmentsData } from "./appointments.data";
 import {
+  CreateAdminClientInput,
   CreateAppointmentInput,
   ListAppointmentsQuery,
+  SearchClientsQuery,
   UpdateAppointmentInput,
 } from "./appointments.schema";
 import {
@@ -151,6 +156,139 @@ function isValidDateString(dateString: string): boolean {
 }
 
 export class AppointmentsService {
+  async createClient(input: CreateAdminClientInput, authenticatedUser: AuthUser) {
+    if (authenticatedUser.role !== UserRole.ADMIN) {
+      throw new ForbiddenError("Acesso negado: permissão restrita a administradores");
+    }
+
+    const normalizedPhone = input.phone ? normalizePhone(input.phone) : null;
+
+    if (normalizedPhone && normalizedPhone.length < 10) {
+      throw new AppError("Telefone inválido");
+    }
+
+    if (input.email && input.password) {
+      const normalizedEmail = input.email.trim().toLowerCase();
+      const existingUser = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+      if (existingUser) {
+        throw new ConflictError("Email já cadastrado");
+      }
+    }
+
+    const data: {
+      name: string;
+      email?: string | null;
+      phone?: string | null;
+      passwordHash?: string | null;
+      role: UserRole;
+    } = {
+      name: input.name,
+      phone: normalizedPhone || null,
+      role: UserRole.CLIENT,
+    };
+
+    if (input.email && input.password) {
+      data.email = input.email.trim().toLowerCase();
+      data.passwordHash = await bcrypt.hash(input.password, 10);
+    }
+
+    const client = await prisma.user.create({
+      data,
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+      },
+    });
+
+    return {
+      client: {
+        ...client,
+        password_hash: undefined,
+      },
+    };
+  }
+
+  async searchClients(query: SearchClientsQuery) {
+    const term = query.q?.trim();
+    const skip = (query.page - 1) * query.limit;
+    const take = query.limit;
+
+    if (!term) {
+      return { clients: [], pagination: { page: query.page, limit: query.limit, total: 0, total_pages: 0 } };
+    }
+
+    const normalizedTerm = normalizePhone(term);
+    const where = {
+      role: UserRole.CLIENT,
+      OR: [
+        { name: { contains: term, mode: "insensitive" as const } },
+        { phone: { contains: normalizedTerm, mode: "insensitive" as const } },
+      ],
+    };
+
+    const [total, clients] = await Promise.all([
+      prisma.user.count({ where }),
+      prisma.user.findMany({
+        where,
+        skip,
+        take,
+        orderBy: { name: "asc" },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          phone: true,
+          role: true,
+        },
+      }),
+    ]);
+
+    return {
+      clients,
+      pagination: {
+        page: query.page,
+        limit: query.limit,
+        total,
+        total_pages: Math.ceil(total / query.limit) || 1,
+      },
+    };
+  }
+
+  async listClients(query: SearchClientsQuery) {
+    const skip = (query.page - 1) * query.limit;
+    const take = query.limit;
+
+    const [total, clients] = await Promise.all([
+      prisma.user.count({ where: { role: UserRole.CLIENT } }),
+      prisma.user.findMany({
+        where: { role: UserRole.CLIENT },
+        skip,
+        take,
+        orderBy: { name: "asc" },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          phone: true,
+          role: true,
+        },
+      }),
+    ]);
+
+    return {
+      clients,
+      pagination: {
+        page: query.page,
+        limit: query.limit,
+        total,
+        total_pages: Math.ceil(total / query.limit) || 1,
+      },
+    };
+  }
+
   async getWeeklyPerformance(query: { week_start?: string }): Promise<{
     week_start: string;
     week_end: string;
@@ -224,7 +362,7 @@ export class AppointmentsService {
     client: {
       id: number;
       name: string;
-      email: string;
+      email: string | null;
       phone: string | null;
     };
     appointmentServices: Array<{
