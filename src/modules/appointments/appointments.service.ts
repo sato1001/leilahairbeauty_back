@@ -62,6 +62,63 @@ function checkClient48HoursRule(
   }
 }
 
+function getSaoPauloLocalTime(date: Date): {
+  weekday: string;
+  hour: number;
+  minute: number;
+  dateKey: string;
+} {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(date);
+  const values = Object.fromEntries(
+    parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value])
+  ) as Record<string, string>;
+
+  return {
+    weekday: values.weekday,
+    hour: Number(values.hour),
+    minute: Number(values.minute),
+    dateKey: `${values.year}-${values.month}-${values.day}`,
+  };
+}
+
+export function validateBusinessHours(scheduledAt: Date, endsAt: Date): void {
+  const salonOpenMinutes = 9 * 60;
+  const salonCloseMinutes = 19 * 60;
+  const businessHoursMessage =
+    "O horário do agendamento está fora do horário de funcionamento do salão. Funcionamento: terça a sábado, das 09:00 às 19:00.";
+
+  const startInSaoPaulo = getSaoPauloLocalTime(scheduledAt);
+  const endInSaoPaulo = getSaoPauloLocalTime(endsAt);
+
+  const isClosedDay =
+    ["Sun", "Mon"].includes(startInSaoPaulo.weekday) ||
+    ["Sun", "Mon"].includes(endInSaoPaulo.weekday) ||
+    startInSaoPaulo.dateKey !== endInSaoPaulo.dateKey;
+
+  if (isClosedDay) {
+    throw new UnprocessableEntityError(businessHoursMessage);
+  }
+
+  const startMinutes = startInSaoPaulo.hour * 60 + startInSaoPaulo.minute;
+  const endMinutes = endInSaoPaulo.hour * 60 + endInSaoPaulo.minute;
+
+  if (startMinutes < salonOpenMinutes || endMinutes >= salonCloseMinutes) {
+    throw new UnprocessableEntityError(businessHoursMessage);
+  }
+}
+
 export class AppointmentsService {
   private formatAppointment(appt: {
     id: number;
@@ -173,6 +230,8 @@ export class AppointmentsService {
     const totalDuration = foundServices.reduce((acc, s) => acc + s.durationMinutes, 0);
     const scheduledAt = new Date(input.scheduled_at);
     const endsAt = new Date(scheduledAt.getTime() + totalDuration * 60 * 1000);
+
+    validateBusinessHours(scheduledAt, endsAt);
 
     // 4. Verificação de conflito de horário
     const conflict = await appointmentsData.findConflictingAppointment(scheduledAt, endsAt);
@@ -361,6 +420,8 @@ export class AppointmentsService {
         : appointment.scheduledAt;
 
     const newEndsAt = new Date(newScheduledAt.getTime() + totalDuration * 60 * 1000);
+
+    validateBusinessHours(newScheduledAt, newEndsAt);
 
     // 2. Verificar conflito de horário (ignorando o próprio agendamento)
     const conflict = await appointmentsData.findConflictingAppointment(

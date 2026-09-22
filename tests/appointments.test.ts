@@ -21,6 +21,24 @@ describe("Feature: Appointments (Agendamentos)", () => {
   let service3Id: number;
   let inactiveServiceId: number;
 
+  function getBusinessSlotDate(daysAhead = 0, hour = 10, minute = 0): Date {
+    const candidate = new Date(Date.now() + daysAhead * 86400000);
+    candidate.setUTCHours(hour + 3, minute, 0, 0);
+
+    while (true) {
+      const weekday = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Sao_Paulo",
+        weekday: "short",
+      }).format(candidate);
+
+      if (weekday !== "Sun" && weekday !== "Mon") {
+        return candidate;
+      }
+
+      candidate.setUTCDate(candidate.getUTCDate() + 1);
+    }
+  }
+
   before(async () => {
     // 0. Limpar agendamentos anteriores de testes com emails de teste
     await prisma.appointmentService.deleteMany({
@@ -165,8 +183,7 @@ describe("Feature: Appointments (Agendamentos)", () => {
 
   describe("1. POST /appointments (Criação de agendamento)", () => {
     it("deve permitir que o CLIENT crie um agendamento para si mesmo com status PENDING e channel ONLINE", async () => {
-      // 10 dias no futuro
-      const scheduledAt = new Date(Date.now() + 10 * 86400000).toISOString();
+      const scheduledAt = getBusinessSlotDate(10, 10).toISOString();
 
       const res = await request(app)
         .post("/appointments")
@@ -198,8 +215,65 @@ describe("Feature: Appointments (Agendamentos)", () => {
       );
     });
 
+    it("deve aceitar agendamento dentro do horário de funcionamento do salão", async () => {
+      const scheduledAt = new Date("2026-10-06T09:00:00-03:00").toISOString();
+
+      const res = await request(app)
+        .post("/appointments")
+        .set("Authorization", `Bearer ${client1Token}`)
+        .send({
+          scheduled_at: scheduledAt,
+          services: [service1Id],
+        });
+
+      assert.strictEqual(res.status, 201);
+      assert.strictEqual(res.body.appointment.duration, 30);
+    });
+
+    it("deve rejeitar agendamento fora do horário de funcionamento do salão", async () => {
+      const scheduledAt = new Date("2026-10-06T18:30:00-03:00").toISOString();
+
+      const res = await request(app)
+        .post("/appointments")
+        .set("Authorization", `Bearer ${client1Token}`)
+        .send({
+          scheduled_at: scheduledAt,
+          services: [service1Id],
+        });
+
+      assert.strictEqual(res.status, 422);
+      assert.match(
+        res.body.message,
+        /horário do agendamento está fora do horário de funcionamento/i
+      );
+    });
+
+    it("deve rejeitar agendamento em domingo e segunda-feira", async () => {
+      const sundayRes = await request(app)
+        .post("/appointments")
+        .set("Authorization", `Bearer ${client1Token}`)
+        .send({
+          scheduled_at: new Date("2026-10-11T10:00:00-03:00").toISOString(),
+          services: [service1Id],
+        });
+
+      assert.strictEqual(sundayRes.status, 422);
+      assert.match(sundayRes.body.message, /horário do agendamento está fora do horário de funcionamento/i);
+
+      const mondayRes = await request(app)
+        .post("/appointments")
+        .set("Authorization", `Bearer ${client1Token}`)
+        .send({
+          scheduled_at: new Date("2026-10-05T10:00:00-03:00").toISOString(),
+          services: [service1Id],
+        });
+
+      assert.strictEqual(mondayRes.status, 422);
+      assert.match(mondayRes.body.message, /horário do agendamento está fora do horário de funcionamento/i);
+    });
+
     it("deve permitir que o ADMIN crie agendamento para CLIENT com status CONFIRMED e channel PHONE", async () => {
-      const scheduledAt = new Date(Date.now() + 11 * 86400000).toISOString();
+      const scheduledAt = getBusinessSlotDate(11, 10).toISOString();
 
       const res = await request(app)
         .post("/appointments")
@@ -220,7 +294,7 @@ describe("Feature: Appointments (Agendamentos)", () => {
     });
 
     it("deve ignorar client_id enviado por CLIENT e forçar agendamento para si mesmo", async () => {
-      const scheduledAt = new Date(Date.now() + 12 * 86400000).toISOString();
+      const scheduledAt = getBusinessSlotDate(12, 10).toISOString();
 
       const res = await request(app)
         .post("/appointments")
@@ -360,8 +434,7 @@ describe("Feature: Appointments (Agendamentos)", () => {
 
     before(async () => {
       // Definir um horário base bem à frente (ex: 20 dias)
-      baseTime = new Date(Date.now() + 20 * 86400000);
-      baseTime.setMinutes(0, 0, 0);
+      baseTime = getBusinessSlotDate(20, 14, 0);
 
       // Criar agendamento PENDING das 14:00 às 14:30 (service1 = 30m)
       await request(app)
@@ -421,8 +494,7 @@ describe("Feature: Appointments (Agendamentos)", () => {
 
     it("NÃO deve dar conflito se o agendamento no mesmo horário estiver CANCELLED", async () => {
       // Criar um horário específico
-      const cancelledTime = new Date(Date.now() + 25 * 86400000);
-      cancelledTime.setMinutes(0, 0, 0);
+      const cancelledTime = getBusinessSlotDate(25, 14, 0);
 
       await prisma.appointment.create({
         data: {
@@ -454,8 +526,7 @@ describe("Feature: Appointments (Agendamentos)", () => {
     });
 
     it("NÃO deve dar conflito se o agendamento no mesmo horário estiver COMPLETED", async () => {
-      const completedTime = new Date(Date.now() + 26 * 86400000);
-      completedTime.setMinutes(0, 0, 0);
+      const completedTime = getBusinessSlotDate(26, 14, 0);
 
       await prisma.appointment.create({
         data: {
@@ -489,10 +560,7 @@ describe("Feature: Appointments (Agendamentos)", () => {
 
   describe("3. Sugestão de agendamento na mesma semana", () => {
     it("deve sugerir agendamento existente na mesma semana para o cliente sem bloquear a criação", async () => {
-      // Escolher uma data futura: digamos daqui a 35 dias
-      const firstDate = new Date(Date.now() + 35 * 86400000);
-      // Garantir horário das 10:00 UTC
-      firstDate.setUTCHours(10, 0, 0, 0);
+      const firstDate = getBusinessSlotDate(35, 10, 0);
 
       // Primeiro agendamento do client1 nessa semana
       const res1 = await request(app)
@@ -508,6 +576,9 @@ describe("Feature: Appointments (Agendamentos)", () => {
 
       // Segundo agendamento do mesmo client1 no mesmo dia, mas às 15:00 (dentro da mesma semana)
       const secondDate = new Date(firstDate.getTime() + 5 * 3600000);
+      if (new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", weekday: "short" }).format(secondDate) === "Sun" || new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", weekday: "short" }).format(secondDate) === "Mon") {
+        secondDate.setUTCDate(secondDate.getUTCDate() + 1);
+      }
 
       const res2 = await request(app)
         .post("/appointments")
@@ -530,7 +601,7 @@ describe("Feature: Appointments (Agendamentos)", () => {
     let apptId: number;
 
     before(async () => {
-      const scheduledAt = new Date(Date.now() + 40 * 86400000).toISOString();
+      const scheduledAt = getBusinessSlotDate(40, 10).toISOString();
       const res = await request(app)
         .post("/appointments")
         .set("Authorization", `Bearer ${client1Token}`)
@@ -669,7 +740,7 @@ describe("Feature: Appointments (Agendamentos)", () => {
 
   describe("6. Atomicidade da transação (Rollback)", () => {
     it("não deve deixar agendamento órfão se a inserção dos itens falhar", async () => {
-      const scheduledAt = new Date(Date.now() + 50 * 86400000);
+      const scheduledAt = getBusinessSlotDate(50, 10);
       const endsAt = new Date(scheduledAt.getTime() + 30 * 60000);
 
       // Simulação de falha transacional
@@ -716,7 +787,7 @@ describe("Feature: Appointments (Agendamentos)", () => {
 
   describe("7. Proteção de concorrência no Banco (Exclusion Constraint PostgreSQL)", () => {
     it("deve disparar erro no PostgreSQL ao tentar inserir agendamentos sobrepostos diretamente no banco", async () => {
-      const scheduledAt = new Date(Date.now() + 60 * 86400000);
+      const scheduledAt = getBusinessSlotDate(60, 10);
       const endsAt = new Date(scheduledAt.getTime() + 60 * 60000);
 
       // Inserir primeiro agendamento
@@ -761,10 +832,24 @@ describe("Feature: Appointments (Agendamentos)", () => {
     });
   });
 
-  let nextTestSlotHour = 500;
+  let nextTestSlotDay = 10;
   function getTestTimeSlot(): Date {
-    nextTestSlotHour += 100;
-    return new Date(Date.now() + nextTestSlotHour * 3600000);
+    let slot = new Date(Date.now() + nextTestSlotDay * 86400000);
+    nextTestSlotDay += 7;
+    slot.setUTCHours(12, 0, 0, 0);
+
+    while (true) {
+      const weekday = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Sao_Paulo",
+        weekday: "short",
+      }).format(slot);
+
+      if (weekday !== "Sun" && weekday !== "Mon") {
+        return slot;
+      }
+
+      slot = new Date(slot.getTime() + 86400000);
+    }
   }
 
   describe("8. PATCH /appointments/:id (Alteração de horário e serviços)", () => {
@@ -784,7 +869,7 @@ describe("Feature: Appointments (Agendamentos)", () => {
         },
       });
 
-      const newScheduledAt = new Date(scheduledAt.getTime() + 86400000).toISOString();
+      const newScheduledAt = getBusinessSlotDate(15, 11, 0).toISOString();
       const res = await request(app)
         .patch(`/appointments/${appt.id}`)
         .set("Authorization", `Bearer ${client1Token}`)
@@ -840,7 +925,7 @@ describe("Feature: Appointments (Agendamentos)", () => {
         },
       });
 
-      const newScheduledAt = new Date(Date.now() + 8 * 86400000).toISOString();
+      const newScheduledAt = getBusinessSlotDate(16, 11, 0).toISOString();
       const res = await request(app)
         .patch(`/appointments/${appt.id}`)
         .set("Authorization", `Bearer ${adminToken}`)
@@ -903,6 +988,37 @@ describe("Feature: Appointments (Agendamentos)", () => {
       assert.strictEqual(res.body.appointment.status, "PENDING");
     });
 
+    it("deve rejeitar alteração para horário fora do expediente do salão", async () => {
+      const scheduledAt = getBusinessSlotDate(40, 9, 0);
+      const appt = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: client1.id,
+          scheduledAt,
+          endsAt: new Date(scheduledAt.getTime() + 30 * 60000),
+          status: AppointmentStatus.PENDING,
+          channel: AppointmentChannel.ONLINE,
+          appointmentServices: {
+            create: { serviceId: service1Id, priceCharged: 50.0 },
+          },
+        },
+      });
+
+      const invalidScheduledAt = new Date(scheduledAt.getTime() + 10 * 60 * 60000);
+      const res = await request(app)
+        .patch(`/appointments/${appt.id}`)
+        .set("Authorization", `Bearer ${client1Token}`)
+        .send({
+          scheduled_at: invalidScheduledAt.toISOString(),
+        });
+
+      assert.strictEqual(res.status, 422);
+      assert.match(
+        res.body.message,
+        /horário do agendamento está fora do horário de funcionamento/i
+      );
+    });
+
     it("deve manter o status CONFIRMED quando ADMIN alterar o agendamento", async () => {
       const scheduledAt = getTestTimeSlot();
       const appt = await prisma.appointment.create({
@@ -929,7 +1045,7 @@ describe("Feature: Appointments (Agendamentos)", () => {
     });
 
     it("deve retornar 400 se nenhum campo for informado ({})", async () => {
-      const scheduledAt = getTestTimeSlot();
+      const scheduledAt = getBusinessSlotDate(90, 10, 0);
       const appt = await prisma.appointment.create({
         data: {
           clientId: client1.id,
@@ -1246,7 +1362,7 @@ describe("Feature: Appointments (Agendamentos)", () => {
     });
 
     it("deve retornar 403 quando CLIENT tentar cancelar com menos de 48h de antecedência", async () => {
-      const scheduledAt = new Date(Date.now() + 24 * 3600000); // 24h
+      const scheduledAt = getBusinessSlotDate(1, 10);
       const appt = await prisma.appointment.create({
         data: {
           clientId: client1.id,

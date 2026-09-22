@@ -83,6 +83,32 @@ A API estará disponível em: **[http://localhost:3001](http://localhost:3001)**
 
 ---
 
+##  Horário de funcionamento do salão
+
+A regra de negócio atual considera o expediente do salão em fuso `America/Sao_Paulo`:
+
+- **Terça-feira a sábado:** 09:00 às 19:00
+- **Domingo:** fechado
+- **Segunda-feira:** fechado
+- O agendamento inteiro precisa caber dentro do expediente
+
+Exemplos válidos:
+
+- terça às 17:00 com serviço de 60 minutos
+- terça às 18:00 com serviço de 60 minutos
+
+Exemplos inválidos:
+
+- terça às 18:30 com serviço de 60 minutos
+- segunda-feira às 10:00
+- domingo às 14:00
+
+A validação é aplicada no backend na criação e na alteração de agendamentos, sempre antes da checagem de conflitos.
+
+> **Observação:** horários especiais por data, feriados, folgas e regras excepcionais não estão contemplados nesta versão.
+
+---
+
 ##  Execução de Testes
 
 Para executar os testes automatizados da aplicação:
