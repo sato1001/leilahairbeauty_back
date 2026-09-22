@@ -10,6 +10,16 @@ export function errorMiddleware(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _next: NextFunction
 ): void {
+  if (process.env.NODE_ENV !== "test") {
+    if (error instanceof AppError) {
+      console.warn(`\x1b[33m[AppError]\x1b[0m ${error.message} (${error.statusCode})`);
+    } else if (error instanceof ZodError) {
+      console.warn(`\x1b[33m[ZodValidationError]\x1b[0m ${JSON.stringify(error.issues.map((i) => ({ field: i.path.join("."), message: i.message })))}`);
+    } else {
+      console.error(`\x1b[31m[ServerError]\x1b[0m`, error);
+    }
+  }
+
   if (error instanceof ZodError) {
     res.status(400).json({
       message: "Dados de entrada inválidos",

@@ -4,9 +4,11 @@ import authRouter from "./modules/auth/auth.routes";
 import serviceRouter from "./modules/services/service.routes";
 import appointmentsRouter from "./modules/appointments/appointments.routes";
 import { setupSwagger } from "./docs/swagger";
+import { loggerMiddleware } from "./middlewares/logger.middleware";
 import { errorMiddleware } from "./middlewares/error.middleware";
 
 const app: Application = express();
+app.use(loggerMiddleware);
 const allowedOrigins = (process.env.CORS_ORIGIN ?? "http://localhost:3000")
   .split(",")
   .map((origin) => origin.trim())
