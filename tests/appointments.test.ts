@@ -597,7 +597,114 @@ describe("Feature: Appointments (Agendamentos)", () => {
     });
   });
 
-  describe("4. GET /appointments/:id (Consulta por ID)", () => {
+  describe("4. GET /appointments/weekly-performance (Desempenho semanal)", () => {
+    it("deve permitir ADMIN consultar desempenho semanal da semana atual", async () => {
+      const weekStart = "2030-01-07";
+      const monday = new Date("2030-01-07T00:00:00-03:00");
+      const wednesday = new Date("2030-01-09T10:00:00-03:00");
+      const saturday = new Date("2030-01-12T16:00:00-03:00");
+
+      const confirmedAppointment = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: adminUser.id,
+          scheduledAt: monday,
+          endsAt: new Date(monday.getTime() + 30 * 60000),
+          status: AppointmentStatus.CONFIRMED,
+          channel: AppointmentChannel.ONLINE,
+        },
+      });
+
+      const completedAppointment = await prisma.appointment.create({
+        data: {
+          clientId: client2.id,
+          createdBy: adminUser.id,
+          scheduledAt: wednesday,
+          endsAt: new Date(wednesday.getTime() + 30 * 60000),
+          status: AppointmentStatus.COMPLETED,
+          channel: AppointmentChannel.PHONE,
+        },
+      });
+
+      const cancelledAppointment = await prisma.appointment.create({
+        data: {
+          clientId: client1.id,
+          createdBy: adminUser.id,
+          scheduledAt: saturday,
+          endsAt: new Date(saturday.getTime() + 30 * 60000),
+          status: AppointmentStatus.CANCELLED,
+          channel: AppointmentChannel.ONLINE,
+        },
+      });
+
+      await prisma.appointmentService.createMany({
+        data: [
+          {
+            appointmentId: confirmedAppointment.id,
+            serviceId: service1Id,
+            priceCharged: 50,
+            status: ServiceItemStatus.PENDING,
+          },
+          {
+            appointmentId: completedAppointment.id,
+            serviceId: service1Id,
+            priceCharged: 50,
+            status: ServiceItemStatus.COMPLETED,
+          },
+          {
+            appointmentId: cancelledAppointment.id,
+            serviceId: service2Id,
+            priceCharged: 40,
+            status: ServiceItemStatus.CANCELLED,
+          },
+        ],
+      });
+
+      const res = await request(app)
+        .get("/appointments/weekly-performance")
+        .query({ week_start: weekStart })
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.summary.confirmed, 1);
+      assert.strictEqual(res.body.summary.completed, 1);
+      assert.strictEqual(res.body.summary.cancelled, 1);
+      assert.strictEqual(res.body.revenue, 50);
+      assert.strictEqual(res.body.most_booked_service.service_id, service1Id);
+      assert.strictEqual(res.body.most_booked_service.quantity, 2);
+    });
+
+    it("deve bloquear acesso de CLIENT ao desempenho semanal", async () => {
+      const res = await request(app)
+        .get("/appointments/weekly-performance")
+        .query({ week_start: "2026-10-05" })
+        .set("Authorization", `Bearer ${client1Token}`);
+
+      assert.strictEqual(res.status, 403);
+    });
+
+    it("deve rejeitar week_start inválida com 422", async () => {
+      const res = await request(app)
+        .get("/appointments/weekly-performance")
+        .query({ week_start: "2026-10-06" })
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      assert.strictEqual(res.status, 422);
+      assert.match(res.body.message, /segunda-feira/i);
+    });
+
+    it("deve rejeitar week_start com data inválida com 422", async () => {
+      const res = await request(app)
+        .get("/appointments/weekly-performance")
+        .query({ week_start: "2026-02-30" })
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      assert.strictEqual(res.status, 422);
+      assert.match(res.body.message, /data válida/i);
+    });
+  });
+
+  describe("5. GET /appointments/:id (Consulta por ID)", () => {
     let apptId: number;
 
     before(async () => {

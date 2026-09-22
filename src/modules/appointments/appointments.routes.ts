@@ -103,6 +103,42 @@ appointmentsRouter.get("/", authMiddleware, (req, res, next) => {
 
 /**
  * @openapi
+ * /appointments/weekly-performance:
+ *   get:
+ *     summary: Retorna o desempenho semanal de agendamentos
+ *     description: Endpoint exclusivo para ADMIN. Calcula contagem por status, faturamento total de agendamentos concluídos e o serviço mais agendado durante a semana. Se week_start não for informado, usa a semana atual em America/Sao_Paulo; deve ser uma segunda-feira válida.
+ *     tags:
+ *       - Agendamentos
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: week_start
+ *         schema:
+ *           type: string
+ *           format: date
+ *           example: "2026-09-21"
+ *     responses:
+ *       200:
+ *         description: Dados agregados da semana
+ *       401:
+ *         description: Não autenticado
+ *       403:
+ *         description: Acesso restrito a administradores
+ *       422:
+ *         description: week_start inválida ou não é segunda-feira
+ */
+appointmentsRouter.get(
+  "/weekly-performance",
+  authMiddleware,
+  requireAdmin,
+  (req, res, next) => {
+    appointmentsController.weeklyPerformance(req, res, next);
+  }
+);
+
+/**
+ * @openapi
  * /appointments/{id}:
  *   get:
  *     summary: Consulta agendamento por ID

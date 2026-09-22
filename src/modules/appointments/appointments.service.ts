@@ -62,6 +62,15 @@ function checkClient48HoursRule(
   }
 }
 
+function formatDateInSaoPaulo(date: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
 function getSaoPauloLocalTime(date: Date): {
   weekday: string;
   hour: number;
@@ -119,7 +128,89 @@ export function validateBusinessHours(scheduledAt: Date, endsAt: Date): void {
   }
 }
 
+function isValidDateString(dateString: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+    return false;
+  }
+
+  const [yearText, monthText, dayText] = dateString.split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return false;
+  }
+
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return (
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day
+  );
+}
+
 export class AppointmentsService {
+  async getWeeklyPerformance(query: { week_start?: string }): Promise<{
+    week_start: string;
+    week_end: string;
+    summary: {
+      confirmed: number;
+      completed: number;
+      cancelled: number;
+    };
+    revenue: number;
+    most_booked_service: {
+      service_id: number;
+      name: string;
+      quantity: number;
+    } | null;
+  }> {
+    let weekStart: Date;
+
+    if (query.week_start) {
+      if (!isValidDateString(query.week_start)) {
+        throw new UnprocessableEntityError("week_start deve ser uma data válida no formato YYYY-MM-DD");
+      }
+
+      weekStart = parseDateInSaoPaulo(query.week_start, false);
+      const weekday = new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Sao_Paulo",
+        weekday: "short",
+      }).format(weekStart);
+
+      if (weekday !== "Mon") {
+        throw new UnprocessableEntityError("week_start deve ser uma segunda-feira válida em America/Sao_Paulo");
+      }
+    } else {
+      const { startOfWeek } = getWeekBoundsInSaoPaulo(new Date());
+      weekStart = startOfWeek;
+    }
+
+    const nextWeekStart = new Date(weekStart.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+    const summary = await appointmentsData.getWeeklyPerformanceSummary(weekStart, nextWeekStart);
+    const revenue = await appointmentsData.getWeeklyRevenue(weekStart, nextWeekStart);
+    const mostBookedService = await appointmentsData.getWeeklyMostBookedService(
+      weekStart,
+      nextWeekStart
+    );
+
+    const weekEndDate = new Date(weekStart.getTime() + 6 * 24 * 60 * 60 * 1000);
+
+    return {
+      week_start: formatDateInSaoPaulo(weekStart),
+      week_end: formatDateInSaoPaulo(weekEndDate),
+      summary: {
+        confirmed: summary.confirmed,
+        completed: summary.completed,
+        cancelled: summary.cancelled,
+      },
+      revenue: Number(revenue.toFixed(2)),
+      most_booked_service: mostBookedService,
+    };
+  }
+
   private formatAppointment(appt: {
     id: number;
     clientId: number;

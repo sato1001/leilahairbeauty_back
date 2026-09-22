@@ -83,6 +83,45 @@ A API estará disponível em: **[http://localhost:3001](http://localhost:3001)**
 
 ---
 
+##  Desempenho Semanal de Agendamentos (`GET /appointments/weekly-performance`)
+
+Endpoint exclusivo para usuários com perfil `ADMIN`.
+
+- **Acesso**: `ADMIN`
+- **Parâmetro opcional**: `week_start` em formato `YYYY-MM-DD`
+- **Validação**: a data deve existir e corresponder a uma segunda-feira em `America/Sao_Paulo`
+- **Semana considerada**: da segunda-feira até o domingo seguinte
+- **Resumo**:
+  - `summary.confirmed`
+  - `summary.completed`
+  - `summary.cancelled`
+  - `revenue`: soma de `appointment_services.price_charged` apenas para agendamentos no status `COMPLETED`
+  - `most_booked_service`: serviço com maior quantidade no período, excluindo agendamentos `CANCELLED`
+
+Exemplo de resposta:
+
+```json
+{
+  "week_start": "2026-10-05",
+  "week_end": "2026-10-11",
+  "summary": {
+    "confirmed": 4,
+    "completed": 7,
+    "cancelled": 1
+  },
+  "revenue": 540.5,
+  "most_booked_service": {
+    "service_id": 3,
+    "name": "Coloração",
+    "quantity": 9
+  }
+}
+```
+
+Se `week_start` for inválida ou não for uma segunda-feira, o endpoint retorna `HTTP 422`.
+
+---
+
 ##  Horário de funcionamento do salão
 
 A regra de negócio atual considera o expediente do salão em fuso `America/Sao_Paulo`:

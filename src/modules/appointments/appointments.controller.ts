@@ -4,6 +4,7 @@ import {
   createAppointmentSchema,
   listAppointmentsQuerySchema,
   updateAppointmentSchema,
+  weeklyPerformanceQuerySchema,
 } from "./appointments.schema";
 import { appointmentsService } from "./appointments.service";
 
@@ -73,6 +74,16 @@ export class AppointmentsController {
     try {
       const { id } = appointmentIdParamSchema.parse(req.params);
       const result = await appointmentsService.complete(id, req.user!);
+      res.status(200).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async weeklyPerformance(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const data = weeklyPerformanceQuerySchema.parse(req.query);
+      const result = await appointmentsService.getWeeklyPerformance(data);
       res.status(200).json(result);
     } catch (error) {
       next(error);

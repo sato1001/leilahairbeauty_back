@@ -50,6 +50,104 @@ export class AppointmentsData {
     });
   }
 
+  async getWeeklyPerformanceSummary(weekStart: Date, nextWeekStart: Date) {
+    const rows = await prisma.appointment.groupBy({
+      by: ["status"],
+      where: {
+        scheduledAt: {
+          gte: weekStart,
+          lt: nextWeekStart,
+        },
+        status: {
+          in: [AppointmentStatus.CONFIRMED, AppointmentStatus.COMPLETED, AppointmentStatus.CANCELLED],
+        },
+      },
+      _count: {
+        _all: true,
+      },
+    });
+
+    return rows.reduce(
+      (acc, row) => {
+        const key = row.status.toLowerCase() as "confirmed" | "completed" | "cancelled";
+        acc[key] = row._count._all;
+        return acc;
+      },
+      {
+        confirmed: 0,
+        completed: 0,
+        cancelled: 0,
+      }
+    );
+  }
+
+  async getWeeklyRevenue(weekStart: Date, nextWeekStart: Date): Promise<number> {
+    const rows = await prisma.appointmentService.groupBy({
+      by: ["appointmentId"],
+      where: {
+        appointment: {
+          scheduledAt: {
+            gte: weekStart,
+            lt: nextWeekStart,
+          },
+          status: AppointmentStatus.COMPLETED,
+        },
+      },
+      _sum: {
+        priceCharged: true,
+      },
+    });
+
+    return rows.reduce((total, row) => total + Number(row._sum.priceCharged ?? 0), 0);
+  }
+
+  async getWeeklyMostBookedService(weekStart: Date, nextWeekStart: Date) {
+    const rows = await prisma.appointmentService.groupBy({
+      by: ["serviceId"],
+      where: {
+        appointment: {
+          scheduledAt: {
+            gte: weekStart,
+            lt: nextWeekStart,
+          },
+          status: {
+            in: [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED, AppointmentStatus.COMPLETED],
+          },
+        },
+      },
+      _count: {
+        _all: true,
+      },
+    });
+
+    if (rows.length === 0) {
+      return null;
+    }
+
+    const winner = rows.reduce((best, current) => {
+      const bestCount = typeof best._count === "number" ? best._count : best._count?._all ?? 0;
+      const currentCount = typeof current._count === "number" ? current._count : current._count?._all ?? 0;
+      return currentCount > bestCount ? current : best;
+    }, rows[0]);
+
+    const service = await prisma.service.findUnique({
+      where: { id: winner.serviceId },
+      select: { id: true, name: true },
+    });
+
+    if (!service) {
+      return null;
+    }
+
+    const quantity = typeof winner._count === "number" ? winner._count : winner._count?._all ?? 0;
+
+    return {
+      service_id: service.id,
+      name: service.name,
+      quantity,
+    };
+  }
+
   async findConflictingAppointment(
     scheduledAt: Date,
     endsAt: Date,
