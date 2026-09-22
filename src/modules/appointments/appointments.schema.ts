@@ -69,6 +69,11 @@ export const updateAppointmentSchema = z
     message: "Informe ao menos um campo para alteração: scheduled_at ou services",
   });
 
+export const weeklyPerformanceQuerySchema = z.object({
+  week_start: z.string().optional(),
+});
+
 export type CreateAppointmentInput = z.infer<typeof createAppointmentSchema>;
 export type UpdateAppointmentInput = z.infer<typeof updateAppointmentSchema>;
 export type ListAppointmentsQuery = z.infer<typeof listAppointmentsQuerySchema>;
+export type WeeklyPerformanceQuery = z.infer<typeof weeklyPerformanceQuerySchema>;
