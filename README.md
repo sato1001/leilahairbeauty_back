@@ -321,6 +321,97 @@ Gerenciamento do catálogo de serviços do salão com suporte a **Soft Delete**.
 
 ---
 
+##  Endpoints de Clientes criados pelo Admin (`/appointments/clients`)
+
+Fluxo administrativo para cadastro de clientes sem conta de acesso, usado principalmente para agendamento por telefone.
+
+### 1. Criar cliente sem login (`POST /appointments/clients`)
+* **Acesso**: Restrito a administradores (`ADMIN`).
+* **Headers**: `Authorization: Bearer <token_admin>`
+* **Regras de Negócio**:
+  * o cliente pode ser criado sem `email` e sem `password`;
+  * o registro é persistido como `User` com `role: CLIENT`;
+  * o telefone é normalizado internamente para comparação consistente;
+  * se o admin enviar `email` ou `password`, eles devem vir juntos;
+  * a criação também aceita `phone` opcional, mas o campo principal para identificação do cliente é `name` + `phone`.
+* **Request**:
+```json
+{
+  "name": "Cliente sem conta",
+  "phone": "(18) 99999-9999"
+}
+```
+* **Resposta (HTTP 201 Created)**:
+```json
+{
+  "client": {
+    "id": 12,
+    "name": "Cliente sem conta",
+    "phone": "18999999999",
+    "email": null,
+    "role": "CLIENT"
+  }
+}
+```
+
+### 2. Listar clientes (`GET /appointments/clients`)
+* **Acesso**: Restrito a administradores (`ADMIN`).
+* **Headers**: `Authorization: Bearer <token_admin>`
+* **Parâmetros de query**:
+  * `q` (opcional): texto para busca por nome ou telefone.
+  * `page` (opcional): página atual.
+  * `limit` (opcional): quantidade por página.
+* **Resposta (HTTP 200 OK)**:
+```json
+{
+  "clients": [
+    {
+      "id": 12,
+      "name": "Cliente sem conta",
+      "phone": "18999999999",
+      "email": null,
+      "role": "CLIENT"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 10,
+    "total": 1,
+    "total_pages": 1
+  }
+}
+```
+
+### 3. Buscar clientes por nome ou telefone (`GET /appointments/clients/search`)
+* **Acesso**: Restrito a administradores (`ADMIN`).
+* **Headers**: `Authorization: Bearer <token_admin>`
+* **Parâmetros de query**:
+  * `q`: texto livre usado para localizar clientes por nome ou parte do telefone.
+  * `page` (opcional): página atual.
+  * `limit` (opcional): quantidade por página.
+* **Exemplo de requisição**:
+```http
+GET /appointments/clients/search?q=99999&page=1&limit=10
+```
+* **Resposta (HTTP 200 OK)**:
+```json
+{
+  "clients": [
+    {
+      "id": 12,
+      "name": "Cliente sem conta",
+      "phone": "18999999999",
+      "email": null,
+      "role": "CLIENT"
+    }
+  ]
+}
+```
+
+> Importante: este fluxo foi projetado para permitir o agendamento por telefone sem que o cliente tenha uma conta de acesso à plataforma. O cadastro é feito pelo administrador e o cliente continua sem credenciais de login.
+
+---
+
 ##  Endpoints de Agendamentos (`/appointments`)
 
 Gerenciamento de agendamentos online e presenciais do salão, com cálculo automático de duração e horário de término, prevenção de sobreposição de horários e integridade transacional.

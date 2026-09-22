@@ -139,6 +139,138 @@ appointmentsRouter.get(
 
 /**
  * @openapi
+ * /appointments/clients/search:
+ *   get:
+ *     summary: Busca clientes por nome ou telefone
+ *     description: Endpoint exclusivo para ADMIN. Permite localizar clientes cadastrados pelo administrador usando texto livre em nome ou telefone.
+ *     tags:
+ *       - Clientes
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         required: false
+ *         schema:
+ *           type: string
+ *           example: "99999"
+ *       - in: query
+ *         name: page
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *     responses:
+ *       200:
+ *         description: Lista de clientes encontrados
+ *       401:
+ *         description: Não autenticado
+ *       403:
+ *         description: Acesso restrito a administradores
+ */
+appointmentsRouter.get("/clients/search", authMiddleware, requireAdmin, (req, res, next) => {
+  appointmentsController.searchClients(req, res, next);
+});
+
+/**
+ * @openapi
+ * /appointments/clients:
+ *   get:
+ *     summary: Lista clientes cadastrados pelo admin
+ *     description: Endpoint exclusivo para ADMIN. Retorna clientes paginados para uso em seleção de cliente no agendamento telefônico.
+ *     tags:
+ *       - Clientes
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         required: false
+ *         schema:
+ *           type: string
+ *           example: "Maria"
+ *       - in: query
+ *         name: page
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *     responses:
+ *       200:
+ *         description: Lista de clientes
+ *       401:
+ *         description: Não autenticado
+ *       403:
+ *         description: Acesso restrito a administradores
+ */
+appointmentsRouter.get("/clients", authMiddleware, requireAdmin, (req, res, next) => {
+  appointmentsController.listClients(req, res, next);
+});
+
+/**
+ * @openapi
+ * /appointments/clients:
+ *   post:
+ *     summary: Cria cliente sem conta de acesso
+ *     description: Endpoint exclusivo para ADMIN. Cria um cliente cadastrado sem email/senha, usado para agendamento por telefone.
+ *     tags:
+ *       - Clientes
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 example: "Cliente sem conta"
+ *               phone:
+ *                 type: string
+ *                 example: "(18) 99999-9999"
+ *               email:
+ *                 type: string
+ *                 nullable: true
+ *                 example: null
+ *               password:
+ *                 type: string
+ *                 minLength: 8
+ *                 nullable: true
+ *                 example: null
+ *     responses:
+ *       201:
+ *         description: Cliente criado com sucesso
+ *       400:
+ *         description: Dados inválidos ou email/senha incompletos
+ *       401:
+ *         description: Não autenticado
+ *       403:
+ *         description: Acesso restrito a administradores
+ *       409:
+ *         description: Cliente com telefone ou email duplicado
+ */
+appointmentsRouter.post("/clients", authMiddleware, requireAdmin, (req, res, next) => {
+  appointmentsController.createClient(req, res, next);
+});
+
+/**
+ * @openapi
  * /appointments/{id}:
  *   get:
  *     summary: Consulta agendamento por ID

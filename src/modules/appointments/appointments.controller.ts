@@ -2,7 +2,9 @@ import { Request, Response, NextFunction } from "express";
 import {
   appointmentIdParamSchema,
   createAppointmentSchema,
+  createClientSchema,
   listAppointmentsQuerySchema,
+  searchClientsQuerySchema,
   updateAppointmentSchema,
   weeklyPerformanceQuerySchema,
 } from "./appointments.schema";
@@ -84,6 +86,36 @@ export class AppointmentsController {
     try {
       const data = weeklyPerformanceQuerySchema.parse(req.query);
       const result = await appointmentsService.getWeeklyPerformance(data);
+      res.status(200).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async createClient(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const data = createClientSchema.parse(req.body);
+      const result = await appointmentsService.createClient(data, req.user!);
+      res.status(201).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async searchClients(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const query = searchClientsQuerySchema.parse(req.query);
+      const result = await appointmentsService.searchClients(query);
+      res.status(200).json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async listClients(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const query = searchClientsQuerySchema.parse(req.query);
+      const result = await appointmentsService.listClients(query);
       res.status(200).json(result);
     } catch (error) {
       next(error);

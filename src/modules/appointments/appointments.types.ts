@@ -10,7 +10,7 @@ export interface AppointmentServiceItemResponse {
 export interface AppointmentClientResponse {
   id: number;
   name: string;
-  email: string;
+  email: string | null;
   phone: string | null;
 }
 
